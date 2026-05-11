@@ -1,0 +1,53 @@
+apiVersion: workspace.jupyter.org/v1alpha1
+kind: WorkspaceTemplate
+metadata:
+  name: {{ .Values.workspaceTemplate.name }}
+  namespace: {{ .Values.sharedNamespace }}
+  labels:
+    workspace.jupyter.org/default-template: {{ .Values.workspaceTemplate.isDefault | quote }}
+spec:
+  displayName: {{ .Values.workspaceTemplate.displayName }}
+  description: {{ .Values.workspaceTemplate.description }}
+  defaultImage: {{ .Values.workspaceTemplate.imageUri }}
+  appType: {{ .Values.workspaceTemplate.appType }}
+  defaultAccessType: {{ .Values.workspaceTemplate.accessType }}
+  defaultOwnershipType: {{ .Values.workspaceTemplate.ownershipType }}
+  defaultAccessStrategy:
+    name: {{ .Values.accessStrategy.name }}
+    namespace: {{ .Values.sharedNamespace }}
+  defaultResources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "2"
+      memory: "4Gi"
+  resourceBounds:
+    resources:
+      cpu:
+        min: "100m"
+        max: "8"
+      memory:
+        min: "256Mi"
+        max: "32Gi"
+  primaryStorage:
+    defaultSize: "10Gi"
+    minSize: "1Gi"
+    maxSize: "100Gi"
+    defaultStorageClassName: {{ .Values.workspaceTemplate.storageClassName }}
+    defaultMountPath: "/home/jovyan"
+  defaultPodSecurityContext:
+    fsGroup: 1000
+  defaultNodeSelector:
+    jupyter-deploy/role: workspaces
+  defaultIdleShutdown:
+    enabled: {{ .Values.workspaceTemplate.idleShutdown.enabled }}
+    idleTimeoutInMinutes: {{ .Values.workspaceTemplate.idleShutdown.timeoutMinutes }}
+    detection:
+      httpGet:
+        path: /api/status
+        port: 8888
+  idleShutdownOverrides:
+    allow: true
+    minIdleTimeoutInMinutes: 15
+    maxIdleTimeoutInMinutes: {{ .Values.workspaceTemplate.idleShutdown.maxTimeoutMinutes }}

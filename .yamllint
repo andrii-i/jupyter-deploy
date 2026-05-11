@@ -77,3 +77,4 @@ ignore: |
   dist/
   build/
   *.egg-info/
+  **/charts/*/templates/

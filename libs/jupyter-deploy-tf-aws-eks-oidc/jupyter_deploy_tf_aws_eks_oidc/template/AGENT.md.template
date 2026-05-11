@@ -1,0 +1,125 @@
+# Jupyter-deploy: Terraform AWS EKS OIDC template
+
+## Project organization
+
+This project manages the AWS resources to deploy JupyterLab workspaces on an Amazon EKS cluster.
+It uses Terraform as the infrastructure-as-code engine, provisions an EKS cluster with the
+jupyter-k8s operator for workspace lifecycle management, and controls access with GitHub identities via Dex.
+
+**IMPORTANT:** An Amazon Route53 hosted zone for the domain MUST exist in the AWS account.
+
+The template deploys:
+- A VPC with public and private subnets across 2 AZs
+- An EKS cluster with managed node groups
+- EKS add-ons: vpc-cni, kube-proxy, coredns, pod-identity-agent, ebs-csi-driver, cert-manager, external-dns
+- Helm releases: traefik-crds, jupyter-k8s operator, aws-traefik-dex (OIDC routing)
+- Dex as an OIDC identity provider on the cluster for kubectl authentication
+
+## Usage
+{{ jupyter-deploy-cli-general-instructions }}
+
+## General project information
+{{ show-info-instructions }}
+
+### Configure and create the infrastructure
+{{ config-up-instructions }}
+
+{{ set-variables-with-cmd-instructions }}
+
+{{ set-variables-with-file-instructions }}
+
+{{ read-variables-with-cmd-instructions }}
+
+### View the full terraform logs
+
+{{ history-logs-instructions }}
+
+### Delete all the resources
+
+{{ down-instructions }}
+
+## The terraform project
+
+### Engine directory
+
+The core terraform files are located in `./engine`, including `main.tf`, `variables.tf` and `outputs.tf`.
+Reusable modules are defined in `./engine/modules`:
+- `iam_role` — creates an IAM role with trust policy and attached managed/inline policies
+- `iam_policy` — creates an IAM policy from a list of {actions, resources} statements
+- `vpc` — VPC with public/private subnets, IGW, NAT gateways, route tables
+- `eks_cluster` — EKS cluster (control plane, security groups, OIDC provider)
+- `node_group` — EKS managed node group with role-based labeling
+- `s3_bucket` — S3 bucket with versioning, KMS encryption, public access block
+- `secret` — AWS Secrets Manager secret
+- `ecr` — ECR repository with lifecycle policy
+- `codebuild_job` — CodeBuild project for container image builds
+- `application` — workspace application image build and ECR push
+
+From the `engine` directory, this is a classic terraform project.
+It is possible to use the `terraform` CLI directly, but the recommended way is to use the jupyter-deploy commands.
+
+#### Presets
+`./engine/presets` correspond to optional set of default variables. Users SHOULD NOT modify these files.
+
+### Applications directory
+
+`./applications/` contains Dockerfiles for workspace images (e.g. `jupyterlab/`).
+Each workspace application is wired via the `application` module in `applications.tf`, which creates:
+- An ECR repository for the image that the template will reference
+- A CodeBuild project that builds and pushes the image
+- An S3 source artifact upload
+
+Applications are gated by a `_use` boolean variable (e.g. `workspace_app_jupyterlab_use`).
+
+### Charts directory
+
+`./charts/` contains local Helm charts:
+- `workspace-defaults/` — deploys the default access strategy and template into the shared namespace. It makes it easy for workspace users to create workspace later
+- `console/` — nginx pod serving the `/get-started/` onboarding page with kubeconfig setup instructions.
+
+To modify chart values, edit the `yamlencode({...})` block in the corresponding `.tf` file (`workspaces.tf` or `console.tf`).
+Charts are deployed via `helm_release` with a local path, so changes take effect on the next `jd up`.
+
+### Console page
+
+The console serves two files at `/get-started/`:
+Workspace users should bookmark this URL, then use it to setup their kubectl and manage their workspaces.
+- `setup-config.html.tftpl` — static HTML onboarding page
+- `set-kubeconfig.sh.tftpl` — shell script that configures kubectl with OIDC authentication via kubelogin
+
+
+
+### Router waiter script
+
+`waiter.tf` runs `local-await-router.sh.tftpl` as a `local-exec` provisioner after Helm releases are deployed.
+
+It handles the DNS race condition on fresh deploys because:
+1. domain must resolve from the cluster pods (often fails when existing)
+2. ExternalDNS must create the Route53 record (up to 5 min)
+3. CoreDNS must restart to flush cached NXDOMAIN responses
+4. As a result, routing deployments may be CrashLoopBackOff
+
+The script waits for all routing deployments (traefik, dex, oauth2-proxy, authmiddleware) to become ready,
+and triggers on domain, cluster name, or router chart version/revision changes.
+
+## The deployed EKS cluster
+
+### Accessing the cluster
+
+After deployment, configure kubectl:
+```
+aws eks update-kubeconfig --name CLUSTER_NAME --region REGION
+```
+
+### Key namespaces
+- `jupyter-k8s-system` — jupyter-k8s operator
+- `jupyter-k8s-router` — traefik + dex + oauth2-proxy + authmiddleware (OIDC routing)
+- `jupyter-k8s-shared` - access strategy and default template
+
+### Useful kubectl commands
+- `kubectl get nodes` — list cluster nodes
+- `kubectl get pods -n jupyter-k8s-system` — operator pods
+- `kubectl get pods -n jupyter-k8s-router` — routing pods
+- `kubectl get workspaces -A` — list all workspaces
+
+{{ generated-by-footer }}

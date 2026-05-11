@@ -14,7 +14,7 @@ class TestVerifyInstallation(unittest.TestCase):
         mock_check.return_value = (True, "2.0.0", None)
         # Should not raise
         verify_utils._check_installation("my-tool")
-        mock_check.assert_called_once_with(executable_name="my-tool")
+        mock_check.assert_called_once_with(executable_name="my-tool", version_cmds=None)
 
     @patch("jupyter_deploy.cmd_utils.check_executable_installation")
     def test_raises_when_tool_not_installed(self, mock_check: Mock) -> None:

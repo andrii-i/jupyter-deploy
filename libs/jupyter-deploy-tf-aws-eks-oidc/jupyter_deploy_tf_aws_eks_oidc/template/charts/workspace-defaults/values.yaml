@@ -1,0 +1,22 @@
+domain: ""
+sharedNamespace: jupyter-k8s-shared
+routerNamespace: jupyter-k8s-router
+operatorNamespace: jupyter-k8s-system
+
+accessStrategy:
+  name: oauth-access-strategy
+
+workspaceTemplate:
+  name: jupyterlab
+  isDefault: "true"
+  displayName: JupyterLab
+  description: "JupyterLab workspace with persistent EBS storage"
+  imageUri: ""
+  appType: jupyterlab
+  accessType: OwnerOnly
+  ownershipType: OwnerOnly
+  storageClassName: ebs-sc
+  idleShutdown:
+    enabled: true
+    timeoutMinutes: 60
+    maxTimeoutMinutes: 480

@@ -1,0 +1,76 @@
+schema_version: 1
+template:
+  name: tf-aws-eks-oidc
+  engine: terraform
+  version: 0.1.0
+requirements:
+- name: terraform
+- name: awscli
+- name: kubectl
+values:
+- name: deployment_id
+  source: output
+  source-key: deployment_id
+- name: open_url
+  source: output
+  source-key: get_started_url
+- name: aws_region
+  source: output
+  source-key: region
+project-store:
+  store-type: s3-only
+services: []
+secrets:
+- name: oauth_app_client_secret
+  source: output
+  source-key: secret_arn
+commands:
+- cmd: secret.reveal
+  sequence:
+  - api-name: aws.secretsmanager.get-secret-value
+    arguments:
+    - api-attribute: secret_id
+      source: cli
+      source-key: secret-id
+  results:
+  - result-name: secret-value
+    source: result
+    source-key: '[0].SecretString'
+supervised-execution:
+  config:
+    config.terraform-plan:
+      default-phase:
+        label: Reading data sources
+        progress-pattern: (Read complete after|Refreshing state)
+        progress-events-estimate: 120
+  up:
+    up.terraform-apply:
+      phases:
+      - enter-pattern: 'module.vpc'
+        exit-pattern: 'module.vpc.*Creation complete'
+        label: Creating VPC
+        weight: 5
+      - enter-pattern: 'module.eks_cluster'
+        exit-pattern: 'module.eks_cluster.*Creation complete'
+        label: Creating EKS cluster
+        weight: 40
+      - enter-pattern: 'aws_eks_addon'
+        exit-pattern: 'aws_eks_addon.*Creation complete'
+        label: Installing EKS add-ons
+        weight: 20
+      - enter-pattern: 'helm_release.jupyter_k8s'
+        exit-pattern: 'helm_release.jupyter_k8s.*Creation complete'
+        label: Deploying Jupyter K8s operator
+        weight: 10
+      - enter-pattern: 'helm_release.workspace_router'
+        exit-pattern: 'helm_release.workspace_router.*Creation complete'
+        label: Deploying OIDC routing
+        weight: 15
+      - enter-pattern: 'null_resource.wait_for_routing_ready'
+        exit-pattern: 'null_resource.wait_for_routing_ready.*Creation complete'
+        label: Waiting for routing to be ready
+        weight: 10
+      - enter-pattern: 'helm_release.workspace_defaults'
+        exit-pattern: 'helm_release.workspace_defaults.*Creation complete'
+        label: Creating workspace defaults
+        weight: 5

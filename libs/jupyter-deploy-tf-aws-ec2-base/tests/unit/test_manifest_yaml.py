@@ -167,6 +167,16 @@ class TestManifest(unittest.TestCase):
         for expected_cmd in self.EXPECTED_SECRET_COMMANDS:
             self.assertIn(expected_cmd, command_names, f"Expected secret command {expected_cmd} missing from manifest")
 
+    def test_project_store_declared(self) -> None:
+        if self.MANIFEST is None:
+            self.fail("MANIFEST is None, test setup failed")
+            return
+
+        project_store = self.MANIFEST.get("project-store")
+        self.assertIsNotNone(project_store, "project-store section missing from manifest")
+        assert project_store is not None
+        self.assertEqual(project_store.get("store-type"), "s3-only")
+
     def test_output_sourced_values_have_matching_terraform_outputs(self) -> None:
         if self.MANIFEST is None:
             self.fail("MANIFEST is None, test setup failed")

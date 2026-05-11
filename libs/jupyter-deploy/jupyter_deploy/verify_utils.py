@@ -6,7 +6,9 @@ from jupyter_deploy.exceptions import ToolRequiredError
 from jupyter_deploy.manifest import JupyterDeployRequirementV1
 
 
-def _check_installation(tool_name: str, installation_url: str | None = None) -> None:
+def _check_installation(
+    tool_name: str, installation_url: str | None = None, version_cmds: list[str] | None = None
+) -> None:
     """Shell out to verify tool installation, raise ToolRequiredError if not found.
 
     Raises:
@@ -14,6 +16,7 @@ def _check_installation(tool_name: str, installation_url: str | None = None) -> 
     """
     installed, _, error_msg = cmd_utils.check_executable_installation(
         executable_name=tool_name,
+        version_cmds=version_cmds,
     )
 
     if not installed:
@@ -52,10 +55,20 @@ def _check_jq_installation() -> None:
     )
 
 
+def _check_kubectl_installation() -> None:
+    """Shell out to verify `kubectl` install, raise ToolRequiredError if not found."""
+    return _check_installation(
+        tool_name="kubectl",
+        installation_url="https://kubernetes.io/docs/tasks/tools/install-kubectl/",
+        version_cmds=["version", "--client"],
+    )
+
+
 _TOOL_VERIFICATION_FN_MAP: dict[JupyterDeployTool, Callable[[], None]] = {
     JupyterDeployTool.AWS_CLI: _check_aws_cli_installation,
     JupyterDeployTool.AWS_SSM_PLUGIN: _check_ssm_plugin_installation,
     JupyterDeployTool.JQ: _check_jq_installation,
+    JupyterDeployTool.KUBECTL: _check_kubectl_installation,
     JupyterDeployTool.TERRAFORM: _check_terraform_installation,
 }
 

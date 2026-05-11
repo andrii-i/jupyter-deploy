@@ -11,6 +11,7 @@ members = [
     "jupyter-deploy",
     "jupyter-deploy-monorepo",
     "jupyter-deploy-tf-aws-ec2-base",
+    "jupyter-deploy-tf-aws-eks-oidc",
     "jupyter-infra-tf-aws-iam-ci",
     "pytest-jupyter-deploy",
 ]
@@ -603,6 +604,55 @@ requires-dist = [
     { name = "mypy-boto3-s3" },
     { name = "mypy-boto3-secretsmanager" },
     { name = "mypy-boto3-ssm" },
+    { name = "mypy-boto3-sts" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "jupyter-deploy", editable = "libs/jupyter-deploy" },
+    { name = "mypy", specifier = ">=1.15.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
+    { name = "pytest-cov", specifier = ">=6.1.1" },
+    { name = "pytest-jupyter-deploy", extras = ["ui"], editable = "libs/pytest-jupyter-deploy" },
+    { name = "python-hcl2", specifier = ">=7.2.1" },
+    { name = "pyyaml", specifier = ">=6.0.2" },
+    { name = "ruff", specifier = ">=0.11.8" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20250516" },
+    { name = "yamllint", specifier = ">=1.35.0" },
+]
+
+[[package]]
+name = "jupyter-deploy-tf-aws-eks-oidc"
+version = "0.1.0"
+source = { editable = "libs/jupyter-deploy-tf-aws-eks-oidc" }
+dependencies = [
+    { name = "boto3" },
+    { name = "boto3-stubs" },
+    { name = "kubernetes" },
+    { name = "mypy-boto3-eks" },
+    { name = "mypy-boto3-sts" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "jupyter-deploy" },
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-jupyter-deploy", extra = ["ui"] },
+    { name = "python-hcl2" },
+    { name = "pyyaml" },
+    { name = "ruff" },
+    { name = "types-pyyaml" },
+    { name = "yamllint" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3" },
+    { name = "boto3-stubs" },
+    { name = "kubernetes", specifier = ">=31.0.0" },
+    { name = "mypy-boto3-eks" },
     { name = "mypy-boto3-sts" },
 ]
 

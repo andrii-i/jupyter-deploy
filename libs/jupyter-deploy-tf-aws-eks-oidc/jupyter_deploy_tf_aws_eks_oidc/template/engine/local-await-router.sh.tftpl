@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+
+DOMAIN="${domain}"
+HOSTED_ZONE_ID="${hosted_zone_id}"
+ROUTER_NAMESPACE="${router_namespace}"
+CLUSTER_NAME="${cluster_name}"
+REGION="${region}"
+
+DEPLOYMENTS="traefik dex oauth2-proxy authmiddleware"
+
+setup_kubeconfig() {
+    echo "Configuring kubectl for cluster $CLUSTER_NAME..."
+    if ! aws eks update-kubeconfig \
+        --name "$CLUSTER_NAME" \
+        --region "$REGION" 2>&1; then
+        echo "ERROR: Failed to configure kubeconfig"
+        return 1
+    fi
+
+    # Verify kubectl is targeting the correct cluster and region
+    local current_context
+    current_context=$(kubectl config current-context 2>/dev/null)
+    if [[ "$current_context" != *"$CLUSTER_NAME"* ]] || [[ "$current_context" != *"$REGION"* ]]; then
+        echo "ERROR: kubectl context '$current_context' does not match expected cluster '$CLUSTER_NAME' in region '$REGION'."
+        echo "Aborting to avoid modifying the wrong cluster."
+        return 1
+    fi
+    echo "kubectl configured (context: $current_context)."
+}
+
+dns_already_resolves() {
+    # Quick check: if the domain already resolves, this is not a fresh deploy.
+    # Use a short timeout to avoid blocking on slow DNS.
+    local result
+    result=$(dig +short "$DOMAIN" +time=3 +tries=1 2>/dev/null)
+    if [ -n "$result" ]; then
+        echo "Domain $DOMAIN already resolves ($result), skipping DNS wait."
+        return 0
+    fi
+    return 1
+}
+
+wait_for_route53_record() {
+    local MAX_WAIT_SECONDS=300
+    local SLEEP_INTERVAL=10
+    local waited=0
+
+    echo "Waiting for Route53 record for $DOMAIN (ExternalDNS)..."
+
+    while true; do
+        # Query Route53 directly (bypasses DNS cache) for A or ALIAS records
+        local record_count
+        record_count=$(aws route53 list-resource-record-sets \
+            --hosted-zone-id "$HOSTED_ZONE_ID" \
+            --region "$REGION" \
+            --query "ResourceRecordSets[?Name=='$${DOMAIN}.' && (Type=='A' || Type=='AAAA')] | length(@)" \
+            --output text 2>/dev/null)
+
+        if [ -n "$record_count" ] && [ "$record_count" -gt 0 ] 2>/dev/null; then
+            echo "Route53 record found for $DOMAIN."
+            return 0
+        fi
+
+        if [ $waited -ge $MAX_WAIT_SECONDS ]; then
+            echo "WARNING: Timed out waiting for Route53 record after $${MAX_WAIT_SECONDS}s."
+            echo "ExternalDNS may not have created the record yet."
+            echo "The deployment may still succeed once DNS propagates."
+            return 1
+        fi
+
+        echo "No Route53 record yet, waiting... ($${waited}s / $${MAX_WAIT_SECONDS}s)"
+        sleep $SLEEP_INTERVAL
+        waited=$((waited + SLEEP_INTERVAL))
+    done
+}
+
+flush_coredns_cache() {
+    echo "Restarting CoreDNS to flush negative DNS cache..."
+
+    if ! kubectl rollout restart deployment/coredns -n kube-system 2>&1; then
+        echo "WARNING: Failed to restart CoreDNS. Pods may take longer to recover."
+        return 1
+    fi
+
+    if ! kubectl rollout status deployment/coredns -n kube-system --timeout=60s 2>&1; then
+        echo "WARNING: CoreDNS rollout did not complete within 60s."
+        return 1
+    fi
+
+    echo "CoreDNS restarted successfully."
+    return 0
+}
+
+restart_crashed_pods() {
+    # After CoreDNS flush, pods in CrashLoopBackOff still have exponential backoff.
+    # Restarting the deployments forces immediate pod recreation.
+    echo "Restarting routing deployments to recover from CrashLoopBackOff..."
+
+    local failed=0
+    for deploy in $DEPLOYMENTS; do
+        if ! kubectl get deployment "$deploy" -n "$ROUTER_NAMESPACE" > /dev/null 2>&1; then
+            echo "WARNING: Deployment $deploy not found in $ROUTER_NAMESPACE, skipping."
+            continue
+        fi
+
+        # Check if any pods are in a crash state
+        local not_ready
+        not_ready=$(kubectl get deployment "$deploy" -n "$ROUTER_NAMESPACE" \
+            -o jsonpath='{.status.unavailableReplicas}' 2>/dev/null)
+
+        if [ -n "$not_ready" ] && [ "$not_ready" != "0" ] && [ "$not_ready" != "<none>" ]; then
+            echo "Restarting $deploy ($not_ready unavailable replicas)..."
+            if ! kubectl rollout restart deployment/"$deploy" -n "$ROUTER_NAMESPACE" 2>&1; then
+                echo "WARNING: Failed to restart $deploy."
+                failed=$((failed + 1))
+            fi
+        else
+            echo "Deployment $deploy is healthy, skipping restart."
+        fi
+    done
+
+    if [ $failed -gt 0 ]; then
+        echo "WARNING: $failed deployment(s) failed to restart."
+        return 1
+    fi
+    return 0
+}
+
+wait_for_deployments_ready() {
+    local MAX_WAIT_SECONDS=300
+    local SLEEP_INTERVAL=15
+    local waited=0
+
+    echo "Waiting for routing deployments to become ready..."
+
+    while true; do
+        local all_ready=true
+
+        for deploy in $DEPLOYMENTS; do
+            if ! kubectl get deployment "$deploy" -n "$ROUTER_NAMESPACE" > /dev/null 2>&1; then
+                echo "WARNING: Deployment $deploy not found, skipping."
+                continue
+            fi
+
+            local available
+            local desired
+            available=$(kubectl get deployment "$deploy" -n "$ROUTER_NAMESPACE" \
+                -o jsonpath='{.status.availableReplicas}' 2>/dev/null)
+            desired=$(kubectl get deployment "$deploy" -n "$ROUTER_NAMESPACE" \
+                -o jsonpath='{.spec.replicas}' 2>/dev/null)
+
+            # Default to 0 if empty
+            available=$${available:-0}
+            desired=$${desired:-1}
+
+            if [ "$available" -lt "$desired" ] 2>/dev/null; then
+                all_ready=false
+
+                # On early attempts, check for CrashLoopBackOff and report
+                if [ $waited -gt 0 ]; then
+                    local crash_pods
+                    crash_pods=$(kubectl get pods -n "$ROUTER_NAMESPACE" -l app="$deploy" \
+                        --field-selector=status.phase!=Running \
+                        -o jsonpath='{range .items[*]}{.metadata.name}: {.status.containerStatuses[0].state.waiting.reason}{"\n"}{end}' 2>/dev/null)
+                    if [ -n "$crash_pods" ]; then
+                        echo "  $deploy: not ready ($available/$desired) — $crash_pods"
+                    else
+                        echo "  $deploy: not ready ($available/$desired)"
+                    fi
+                fi
+            fi
+        done
+
+        if [ "$all_ready" = "true" ]; then
+            echo "All routing deployments are ready."
+            return 0
+        fi
+
+        if [ $waited -ge $MAX_WAIT_SECONDS ]; then
+            echo "ERROR: Timed out waiting for routing deployments after $${MAX_WAIT_SECONDS}s."
+            echo ""
+            echo "Your deployment may still succeed once DNS fully propagates."
+            echo "Check pod status with: kubectl get pods -n $ROUTER_NAMESPACE"
+            echo "If pods are in CrashLoopBackOff, try:"
+            echo "  kubectl rollout restart deployment/coredns -n kube-system"
+            echo "  kubectl rollout restart deployment -n $ROUTER_NAMESPACE"
+            exit 1
+        fi
+
+        echo "Waiting for deployments... ($${waited}s / $${MAX_WAIT_SECONDS}s)"
+        sleep $SLEEP_INTERVAL
+        waited=$((waited + SLEEP_INTERVAL))
+    done
+}
+
+main() {
+    setup_kubeconfig || exit 1
+
+    if dns_already_resolves; then
+        # Domain resolves — skip DNS wait and CoreDNS flush, just verify health
+        wait_for_deployments_ready
+        return $?
+    fi
+
+    # Fresh deploy path: wait for DNS, flush cache, restart crashed pods
+    if wait_for_route53_record; then
+        flush_coredns_cache
+        # Give CoreDNS a moment to serve the new record
+        sleep 5
+        restart_crashed_pods
+    else
+        # Route53 record not found within timeout — still try to help recovery
+        echo "Attempting recovery without confirmed Route53 record..."
+        flush_coredns_cache
+        sleep 5
+        restart_crashed_pods
+    fi
+
+    wait_for_deployments_ready
+}
+
+main

@@ -33,6 +33,11 @@ RUN curl -s 'https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ub
     dpkg -i session-manager-plugin.deb && \
     rm session-manager-plugin.deb
 
+# Install kubectl
+RUN curl -sLO "https://dl.k8s.io/release/$(curl -sL https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl && \
+    rm kubectl
+
 # Create user with configurable UID/GID (defaults to 1000:1000)
 ARG USER_UID=1000
 ARG USER_GID=1000
