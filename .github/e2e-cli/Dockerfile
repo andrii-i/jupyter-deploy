@@ -16,11 +16,15 @@ FROM ${BASE_IMAGE}
 # "pypi" installs the CLI from Test PyPI using a template pyproject.
 ARG INSTALL_MODE=workspace
 # Install variant (only applies when INSTALL_MODE=pypi):
-#   "bare" — CLI only, no AWS deps, no template
-#   "aws"  — CLI with [aws] extra + base template from workspace
+#   "bare"    — CLI only, no AWS deps, no template
+#   "aws"     — CLI with [aws] extra + base template from workspace
+#   "aws-k8s" — CLI with [aws,k8s] extras + base template from workspace
 ARG INSTALL_VARIANT=aws
 ARG PKG_VERSION=""
 ARG EXTRA_INDEX_URL=https://test.pypi.org/simple/
+# Index format for EXTRA_INDEX_URL. Empty = PEP-503 simple index (PyPI/Test PyPI).
+# Set to "flat" when EXTRA_INDEX_URL points at a local wheel directory (e.g. file:///workspace/dist).
+ARG INDEX_FORMAT=""
 
 # --- Dependency layer (cached when pyproject.toml unchanged) ---
 # Copy manifests and create stub files that hatchling validates (LICENSE, README.md).
@@ -52,6 +56,7 @@ USER testuser
 # Copy template pyproject files for release mode.
 COPY --chown=testuser:testuser .github/e2e-cli/pyproject.bare.toml /workspace/.github/e2e-cli/pyproject.bare.toml
 COPY --chown=testuser:testuser .github/e2e-cli/pyproject.aws.toml /workspace/.github/e2e-cli/pyproject.aws.toml
+COPY --chown=testuser:testuser .github/e2e-cli/pyproject.aws-k8s.toml /workspace/.github/e2e-cli/pyproject.aws-k8s.toml
 
 # Workspace mode: re-run uv sync to register editable packages.
 # Release mode: render template, uv sync (resolves the CLI from the configured index),
@@ -62,10 +67,12 @@ RUN if [ "$INSTALL_MODE" = "pypi" ]; then \
         cd /workspace && \
         rm -rf .venv && \
         uv cache clean && \
+        if [ -n "$INDEX_FORMAT" ]; then INDEX_FORMAT_LINE="format = \"${INDEX_FORMAT}\""; else INDEX_FORMAT_LINE=""; fi && \
         sed -e "s|{{PKG_VERSION}}|${PKG_VERSION}|g" \
             -e "s|{{EXTRA_INDEX_URL}}|${EXTRA_INDEX_URL}|g" \
+            -e "s|{{INDEX_FORMAT_LINE}}|${INDEX_FORMAT_LINE}|g" \
             .github/e2e-cli/pyproject.${INSTALL_VARIANT}.toml > pyproject.toml && \
-        rm -f .github/e2e-cli/pyproject.bare.toml .github/e2e-cli/pyproject.aws.toml && \
+        rm -f .github/e2e-cli/pyproject.bare.toml .github/e2e-cli/pyproject.aws.toml .github/e2e-cli/pyproject.aws-k8s.toml && \
         # Strip workspace sources — uv errors on them outside workspace context
         sed -i '/\[tool\.uv\.sources\.jupyter-deploy\]/,+1d' libs/pytest-jupyter-deploy/pyproject.toml && \
         sed -i '/\[tool\.uv\.sources\.\(jupyter-deploy\|pytest-jupyter-deploy\)\]/,+1d' libs/jupyter-deploy-tf-aws-ec2-base/pyproject.toml && \
@@ -74,7 +81,7 @@ RUN if [ "$INSTALL_MODE" = "pypi" ]; then \
         ln -sf ~/.cache/ms-playwright/firefox-*/firefox/firefox ~/.local/bin/firefox; \
     else \
         cd /workspace && \
-        rm -f .github/e2e-cli/pyproject.bare.toml .github/e2e-cli/pyproject.aws.toml && \
+        rm -f .github/e2e-cli/pyproject.bare.toml .github/e2e-cli/pyproject.aws.toml .github/e2e-cli/pyproject.aws-k8s.toml && \
         uv sync --all-packages; \
     fi
 
