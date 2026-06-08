@@ -1,0 +1,124 @@
+# Temporary test workflow — DO NOT merge to main.
+# Exercises the full release-cli.yml test chain WITHOUT publishing to Test PyPI,
+# PyPI, or creating a GitHub release.
+#
+# Chain mirrored: build → lint → test → prepublish-smoke (local wheel, all 3 variants) →
+#                 e2e-cli-release (smoke bare/aws/aws-k8s + functional base#2 + EKS#5).
+#
+# release-cli.yml is workflow_dispatch-only so its jobs are INLINED here
+# (per .github/AGENT.md). The e2e-cli.yml gate IS workflow_call, so it is
+# referenced via `uses:`. Its image builds default to Test PyPI; the workspace
+# version must already exist on Test PyPI (e.g. 0.6.1) so it resolves an
+# EXISTING version rather than publishing a new one.
+name: Test release CLI (temporary)
+
+on:
+  push:
+    branches: [chore/k8s-smoke-tests]
+
+permissions:
+  id-token: write    # required — reusable workflows inherit caller permissions
+  contents: read
+
+jobs:
+  # --- Inlined from release-cli.yml (build) ---
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      pkg-name: ${{ steps.get-version.outputs.pkg-name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install UV and Python
+        uses: ./.github/actions/install-uv
+        with:
+          python-version: '3.13'
+          working-directory: '.'
+
+      - name: Build package
+        run: |
+          cd libs/jupyter-deploy
+          uv build
+
+      - name: Get package version
+        id: get-version
+        run: |
+          cd libs/jupyter-deploy
+          echo version=$(uv version --short) >> $GITHUB_OUTPUT
+          echo pkg-name="$(uv version | cut -d ' ' -f 1)" >> $GITHUB_OUTPUT
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  # --- From release-cli.yml (lint + test reusable workflows) ---
+  lint:
+    name: Run linters
+    needs: [build]
+    uses: ./.github/workflows/lint.yml
+    with:
+      working-directory: libs/jupyter-deploy
+
+  test:
+    name: Run tests
+    needs: [lint]
+    uses: ./.github/workflows/test.yml
+    with:
+      working-directory: libs/jupyter-deploy
+
+  # --- Inlined from release-cli.yml (prepublish-smoke) ---
+  prepublish-smoke:
+    name: "Pre-publish smoke (${{ matrix.variant }})"
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [bare, aws, aws-k8s]
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install UV and Python
+        uses: ./.github/actions/install-uv
+        with:
+          python-version: '3.13'
+
+      - name: Install just
+        uses: ./.github/actions/install-just
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Build CLI E2E image from local wheel
+        run: |
+          BUILD_ARGS="--build-arg INSTALL_MODE=pypi"
+          BUILD_ARGS="$BUILD_ARGS --build-arg INSTALL_VARIANT=${{ matrix.variant }}"
+          BUILD_ARGS="$BUILD_ARGS --build-arg PKG_VERSION=${{ env.VERSION }}"
+          BUILD_ARGS="$BUILD_ARGS --build-arg EXTRA_INDEX_URL=file:///workspace/dist"
+          BUILD_ARGS="$BUILD_ARGS --build-arg INDEX_FORMAT=flat"
+          just ci-e2e-cli-build "" "$BUILD_ARGS"
+
+      - name: Run smoke tests
+        run: just test-smoke-cli ${{ matrix.variant }} jupyter-deploy-e2e-cli:latest
+
+  # --- Full E2E gate (references the reusable workflow_call workflow) ---
+  # Resolves the CLI from Test PyPI at the workspace version (must already exist).
+  e2e-cli-release:
+    name: E2E release gate (CLI)
+    needs: [prepublish-smoke, build]
+    uses: ./.github/workflows/e2e-cli.yml
+    secrets: inherit
+    with:
+      pkg-version: ${{ needs.build.outputs.version }}
