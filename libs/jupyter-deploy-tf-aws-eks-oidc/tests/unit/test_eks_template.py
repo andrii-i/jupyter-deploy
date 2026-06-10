@@ -20,13 +20,11 @@ MANDATORY_TEMPLATE_STRPATHS: list[str] = [
     "engine/local-await-router.sh.tftpl",
     "engine/local-destroy-workspaces.sh.tftpl",
     "charts/workspace-defaults/Chart.yaml",
-    "charts/console/Chart.yaml",
     "charts/github-rbac/Chart.yaml",
 ]
 
 CHART_DIRS: list[str] = [
     "charts/workspace-defaults",
-    "charts/console",
     "charts/github-rbac",
 ]
 
