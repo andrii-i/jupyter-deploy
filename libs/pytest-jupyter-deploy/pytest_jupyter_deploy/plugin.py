@@ -99,16 +99,10 @@ def pytest_addoption(parser: Any) -> None:
         help=f"Timeout in seconds for destroy (default: {DESTROY_TIMEOUT_SECONDS})",
     )
     add_option_if_not_exists(
-        "--ci",
-        action="store_true",
-        default=False,
-        help="CI mode: automated authentication via 2FA using CI infrastructure project (requires --ci-dir)",
-    )
-    add_option_if_not_exists(
         "--ci-dir",
         action="store",
         default=None,
-        help="Path to CI infrastructure project (required with --ci for credential fetching)",
+        help="Path to CI infrastructure project (required for browser-auth E2E; provides bot credentials)",
     )
     add_option_if_not_exists(
         "--with-mutating-cases",
@@ -276,6 +270,27 @@ def handle_browser_context_args(browser_context_args: dict[str, Any], request: p
     return {**browser_context_args}
 
 
+def _require_ci_credentials(
+    request: pytest.FixtureRequest,
+) -> tuple[str, str, Callable[[], str]]:
+    """Fetch bot credentials from the CI project, failing early if --ci-dir is missing.
+
+    Browser-auth E2E tests authenticate via the bot account (email + password + TOTP)
+    provisioned by the CI infrastructure project. Tests that do not authenticate a
+    browser (e.g. CLI smoke tests, config-only runs) never request this and are unaffected.
+
+    Raises:
+        pytest.UsageError: If --ci-dir was not provided.
+    """
+    ci_dir = request.config.getoption("--ci-dir")
+    if not ci_dir:
+        raise pytest.UsageError(
+            "Browser-auth E2E tests require --ci-dir <ci-project> to fetch bot credentials. "
+            "Deploy a CI project (just init-ci / ci-deploy-base) and pass ci-dir=<dir>."
+        )
+    return fetch_ci_credentials(ci_dir)
+
+
 @pytest.fixture(scope="function")
 def github_oauth_app(
     page: Page, e2e_deployment: EndToEndDeployment, request: pytest.FixtureRequest
@@ -304,23 +319,12 @@ def github_oauth_app(
     # Define storage state path for persisting authentication
     storage_state_path = Path.cwd() / constants.AUTH_DIR / constants.GITHUB_OAUTH_STATE_FILE
 
-    # Get CI mode from pytest option
-    is_ci = request.config.getoption("--ci", default=False)
-
-    ci_email: str | None = None
-    ci_password: str | None = None
-    ci_totp_fn: Callable[[], str] | None = None
-    if is_ci:
-        ci_dir = request.config.getoption("--ci-dir")
-        if not ci_dir:
-            raise pytest.UsageError("--ci requires --ci-dir <path> for credential fetching")
-        ci_email, ci_password, ci_totp_fn = fetch_ci_credentials(ci_dir)
+    ci_email, ci_password, ci_totp_fn = _require_ci_credentials(request)
 
     return GitHubOAuth2ProxyApplication(
         page=page,
         jupyterlab_url=jupyterlab_url,
         storage_state_path=storage_state_path,
-        is_ci=is_ci,
         ci_email=ci_email,
         ci_password=ci_password,
         ci_totp_fn=ci_totp_fn,
@@ -340,21 +344,12 @@ def dex_oauth_app(
     jupyterlab_url = e2e_deployment.cli.get_jupyterlab_url()
     storage_state_path = Path.cwd() / constants.AUTH_DIR / constants.GITHUB_OAUTH_STATE_FILE
 
-    is_ci = request.config.getoption("--ci", default=False)
-    ci_email: str | None = None
-    ci_password: str | None = None
-    ci_totp_fn: Callable[[], str] | None = None
-    if is_ci:
-        ci_dir = request.config.getoption("--ci-dir")
-        if not ci_dir:
-            raise pytest.UsageError("--ci requires --ci-dir <path> for credential fetching")
-        ci_email, ci_password, ci_totp_fn = fetch_ci_credentials(ci_dir)
+    ci_email, ci_password, ci_totp_fn = _require_ci_credentials(request)
 
     return DexGitHubOAuth2ProxyApplication(
         page=page,
         jupyterlab_url=jupyterlab_url,
         storage_state_path=storage_state_path,
-        is_ci=is_ci,
         ci_email=ci_email,
         ci_password=ci_password,
         ci_totp_fn=ci_totp_fn,
