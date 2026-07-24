@@ -22,8 +22,8 @@
 # prompt-injected review of a malicious diff can at worst spend model tokens and
 # produce a misleading comment.
 #
-# Configuration, resolved per value as workflow_call input, else repository or
-# organization variable, else default (after tf-aws-iam-ci is deployed with
+# Configuration, resolved per value as repository or organization variable,
+# else default (after tf-aws-iam-ci is deployed with
 # create_review_resources = true and the review image is published):
 #   REVIEW_RUN_ROLE_ARN   IAM role ARN (review_run_iam_role_arn output)
 #   REVIEW_IMAGE          ECR image ref, e.g. <repo-url>:latest
@@ -64,36 +64,6 @@ on:
         required: false
         type: boolean
         default: false
-      run_role_arn:
-        description: "Overrides the REVIEW_RUN_ROLE_ARN variable"
-        required: false
-        type: string
-        default: ""
-      image:
-        description: "Overrides the REVIEW_IMAGE variable"
-        required: false
-        type: string
-        default: ""
-      bedrock_model:
-        description: "Overrides the REVIEW_BEDROCK_MODEL variable"
-        required: false
-        type: string
-        default: ""
-      aws_region:
-        description: "Overrides the REVIEW_AWS_REGION variable"
-        required: false
-        type: string
-        default: ""
-      min_severity:
-        description: "Overrides the REVIEW_MIN_SEVERITY variable"
-        required: false
-        type: string
-        default: ""
-      reasoning:
-        description: "Overrides the REVIEW_REASONING variable"
-        required: false
-        type: string
-        default: ""
 
 # One review per PR; a new push cancels the in-flight review for that PR.
 # Applies to entrypoint runs; shims declare their own concurrency group.
@@ -126,12 +96,6 @@ jobs:
       - name: Resolve configuration
         id: resolve
         env:
-          IN_ROLE_ARN: ${{ inputs.run_role_arn }}
-          IN_IMAGE: ${{ inputs.image }}
-          IN_MODEL: ${{ inputs.bedrock_model }}
-          IN_REGION: ${{ inputs.aws_region }}
-          IN_MIN_SEVERITY: ${{ inputs.min_severity }}
-          IN_REASONING: ${{ inputs.reasoning }}
           VAR_ROLE_ARN: ${{ vars.REVIEW_RUN_ROLE_ARN }}
           VAR_IMAGE: ${{ vars.REVIEW_IMAGE }}
           VAR_MODEL: ${{ vars.REVIEW_BEDROCK_MODEL }}
@@ -140,12 +104,12 @@ jobs:
           VAR_REASONING: ${{ vars.REVIEW_REASONING }}
         run: |
           set -euo pipefail
-          role_arn="${IN_ROLE_ARN:-$VAR_ROLE_ARN}"
-          image="${IN_IMAGE:-$VAR_IMAGE}"
-          model="${IN_MODEL:-$VAR_MODEL}"
-          region="${IN_REGION:-${VAR_REGION:-us-west-2}}"
-          min_severity="${IN_MIN_SEVERITY:-${VAR_MIN_SEVERITY:-medium}}"
-          reasoning="${IN_REASONING:-${VAR_REASONING:-standard}}"
+          role_arn="$VAR_ROLE_ARN"
+          image="$VAR_IMAGE"
+          model="$VAR_MODEL"
+          region="${VAR_REGION:-us-west-2}"
+          min_severity="${VAR_MIN_SEVERITY:-medium}"
+          reasoning="${VAR_REASONING:-standard}"
 
           missing=""
           [ -n "$role_arn" ] || missing="$missing REVIEW_RUN_ROLE_ARN"
@@ -153,7 +117,11 @@ jobs:
           [ -n "$model" ] || missing="$missing REVIEW_BEDROCK_MODEL"
 
           if [ -n "$missing" ]; then
-            msg="roborev review is not configured: missing repository or organization variables:$missing (or the matching workflow_call inputs). Setup: deploy tf-aws-iam-ci with create_review_resources = true, publish the review image, then set the variables; see the header of jupyter-infra/jupyter-deploy/.github/workflows/roborev-review.yml."
+            msg="roborev review is not configured: missing repository or organization"
+            msg="$msg variables:$missing. Setup: deploy tf-aws-iam-ci with"
+            msg="$msg create_review_resources = true, publish the review image, then set"
+            msg="$msg the variables; see the header of"
+            msg="$msg jupyter-infra/jupyter-deploy/.github/workflows/roborev-review.yml."
             echo "::warning::$msg"
             {
               echo "## roborev review not configured"
