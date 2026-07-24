@@ -111,6 +111,42 @@ jobs:
           min_severity="${VAR_MIN_SEVERITY:-medium}"
           reasoning="${VAR_REASONING:-standard}"
 
+          # Fail closed on malformed values: in workflow-ref trust mode these
+          # come from the caller's repository variables, so they are validated,
+          # never trusted (see the run-role trust docs in tf-aws-iam-ci).
+          for v in "$role_arn" "$image" "$model" "$region" "$min_severity" "$reasoning"; do
+            case "$v" in
+              *$'\n'*) echo "::error::configuration value contains a newline"; exit 1 ;;
+            esac
+          done
+          case "$min_severity" in
+            critical|high|medium|low) ;;
+            *) echo "::error::invalid REVIEW_MIN_SEVERITY: $min_severity"; exit 1 ;;
+          esac
+          case "$reasoning" in
+            fast|standard|medium|thorough|maximum) ;;
+            *) echo "::error::invalid REVIEW_REASONING: $reasoning"; exit 1 ;;
+          esac
+          case "$region" in
+            [a-z][a-z]-[a-z]*-[0-9]) ;;
+            *) echo "::error::invalid REVIEW_AWS_REGION: $region"; exit 1 ;;
+          esac
+          arn_re='^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_/-]+$'
+          ecr_re='^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/'
+          ecr_re="${ecr_re}[a-z0-9._/-]+(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?\$"
+          if [ -n "$role_arn" ] && ! printf '%s' "$role_arn" | grep -Eq "$arn_re"; then
+            echo "::error::invalid REVIEW_RUN_ROLE_ARN"
+            exit 1
+          fi
+          if [ -n "$image" ] && ! printf '%s' "$image" | grep -Eq "$ecr_re"; then
+            echo "::error::invalid REVIEW_IMAGE: expected a private ECR image reference"
+            exit 1
+          fi
+          if [ -n "$model" ] && ! printf '%s' "$model" | grep -Eq '^[A-Za-z0-9._:/-]+$'; then
+            echo "::error::invalid REVIEW_BEDROCK_MODEL"
+            exit 1
+          fi
+
           missing=""
           [ -n "$role_arn" ] || missing="$missing REVIEW_RUN_ROLE_ARN"
           [ -n "$image" ] || missing="$missing REVIEW_IMAGE"
@@ -249,8 +285,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.pr.outputs.head }}
         run: |
-          gh api -X POST "repos/$REPO/statuses/${{ steps.pr.outputs.head }}" \
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
             -f context=roborev/review -f state=pending \
             -f description="review running" > /dev/null
 
@@ -258,6 +295,7 @@ jobs:
         if: steps.pr.outputs.skip != 'true' && inputs.smoke
         env:
           REVIEW_IMAGE: ${{ needs.config.outputs.image }}
+          MODEL: ${{ needs.config.outputs.model }}
         run: |
           set -euo pipefail
           out=$(docker run --rm \
@@ -267,7 +305,7 @@ jobs:
             -v "$RUNNER_TEMP/aws:/home/node/.aws:ro" \
             -e AWS_REGION -e AWS_DEFAULT_REGION \
             -e CLAUDE_CODE_USE_BEDROCK=1 \
-            -e ANTHROPIC_MODEL="${{ needs.config.outputs.model }}" \
+            -e ANTHROPIC_MODEL="$MODEL" \
             "$REVIEW_IMAGE" claude -p "Reply with exactly: BEDROCK_OK")
           echo "model replied: $out"
           [[ "$out" == *BEDROCK_OK* ]]
@@ -282,6 +320,7 @@ jobs:
           PR: ${{ steps.pr.outputs.pr }}
           HEAD_SHA: ${{ steps.pr.outputs.head }}
           BASE_SHA: ${{ steps.pr.outputs.base }}
+          MODEL: ${{ needs.config.outputs.model }}
           MIN_SEVERITY: ${{ needs.config.outputs.min_severity }}
           REASONING: ${{ needs.config.outputs.reasoning }}
         run: |
@@ -308,7 +347,7 @@ jobs:
             -v "$RUNNER_TEMP/aws:/home/node/.aws:ro" \
             -e AWS_REGION -e AWS_DEFAULT_REGION \
             -e CLAUDE_CODE_USE_BEDROCK=1 \
-            -e ANTHROPIC_MODEL="${{ needs.config.outputs.model }}" \
+            -e ANTHROPIC_MODEL="$MODEL" \
             -v "$PWD:/workspace" -w /workspace \
             "$REVIEW_IMAGE" \
             sh -c "git config --global --add safe.directory /workspace \
