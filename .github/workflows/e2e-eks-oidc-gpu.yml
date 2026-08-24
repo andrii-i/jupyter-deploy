@@ -1,0 +1,70 @@
+# GPU e2e lane: fresh deploy with the default GPU pool, then the GPU tests
+# (they provision a real GPU node). Cost-gated: a fresh deploy consumes a
+# Let's Encrypt cert on app 4's subdomain (limit: 5/week, shared with manual
+# fresh runs) and each run bills a GPU instance, so the label is single-shot:
+# the workflow removes it as it starts, and a maintainer re-applies it to
+# re-run after new pushes.
+#
+# SECURITY: pull_request_target runs with repo secrets while PR-authored code
+# (justfile, scripts, tests) executes in the e2e environment. The gates are the
+# e2e-gpu label (only collaborators can label, applied after reading the diff)
+# and the e2e environment's protection rules. The checkout pins the PR head SHA
+# captured at label time — never the mutable merge ref, which re-resolves at
+# each checkout and would let a push AFTER the label run unreviewed code. The
+# trade-off: the run tests the PR head as-is, not merged with main. Do not
+# widen the trigger types.
+name: E2E GPU (eks-oidc template)
+
+on:
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to test (e.g. refs/pull/185/merge)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: e2e-eks-4
+  cancel-in-progress: false
+
+jobs:
+  consume-label:
+    name: "Consume e2e-gpu label"
+    if: >-
+      github.repository == 'jupyter-infra/jupyter-deploy' &&
+      github.event_name == 'pull_request_target' &&
+      github.event.label.name == 'e2e-gpu'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      # Single-shot trigger: if the label cannot be removed, do not run — a
+      # sticking label would silently re-authorize future pushes.
+      - name: Remove the label
+        run: gh api -X DELETE "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels/e2e-gpu"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  gpu-e2e:
+    name: "GPU e2e (fresh deploy)"
+    needs: [consume-label]
+    if: >-
+      always() && !cancelled() &&
+      (needs.consume-label.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && github.repository == 'jupyter-infra/jupyter-deploy'))
+    uses: ./.github/workflows/e2e-eks-oidc-fresh.yml
+    secrets: inherit
+    with:
+      oauth-app-num: "4"
+      gpu: true
+      test-filter: "test_workspace_gpu"
+      destroy-after: true
+      ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || inputs.ref }}

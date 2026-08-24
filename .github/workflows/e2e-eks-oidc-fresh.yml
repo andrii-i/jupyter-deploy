@@ -42,6 +42,11 @@ on:
         required: false
         type: string
         default: ""
+      gpu:
+        description: "GPU mode: deploy with the default GPU pool, enable GPU tests"
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       oauth-app-num:
@@ -70,6 +75,11 @@ on:
         required: false
         type: string
         default: ""
+      gpu:
+        description: "GPU mode: deploy with the default GPU pool, enable GPU tests"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -181,7 +191,7 @@ jobs:
       - name: Generate .env (fresh deploy mode)
         run: >-
           just env-setup-eks "" sandbox-ci ${{ inputs.oauth-app-num }}
-          "org=jupyter-infra,team=jupyter-deploy-e2e-app-access,rbac-team=jupyter-deploy-e2e-app-access,admin-roles=[\"Admin\",\"DeployRole\",\"jupyter-infra-ci-e2e-6a3e2625\"]"
+          "org=jupyter-infra,team=jupyter-deploy-e2e-app-access,rbac-team=jupyter-deploy-e2e-app-access,admin-roles=[\"Admin\",\"DeployRole\",\"jupyter-infra-ci-e2e-6a3e2625\"]${{ inputs.gpu && ',enable-default-gpu-pool=true,gpu-tests=1' || '' }}"
 
       - name: Import auth state
         run: just auth-import sandbox-ci
@@ -254,6 +264,7 @@ jobs:
       test-filter: ${{ inputs.test-filter }}
       ref: ${{ inputs.ref }}
       ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
+      gpu: ${{ inputs.gpu }}
       timeout-minutes: 120
 
   # All mutating EKS tests, selected by the `mutating` marker so new ones (GPU,
@@ -270,6 +281,7 @@ jobs:
       test-filter: ${{ inputs.test-filter }}
       ref: ${{ inputs.ref }}
       ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
+      gpu: ${{ inputs.gpu }}
       marker: mutating
       mutate: true
       timeout-minutes: 60

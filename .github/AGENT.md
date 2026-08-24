@@ -20,6 +20,7 @@
 | `e2e-eks-oidc-fresh.yml` | `workflow_dispatch` / `workflow_call` | Deploy EKS from scratch (in-container, so pypi-mode deploys the published package) + full E2E chain |
 | `e2e-eks-oidc-release.yml` | `workflow_call` | EKS template release E2E gate — calls fresh workflow with Test PyPI install |
 | `e2e-eks-oidc-canary.yml` | `schedule` / `workflow_dispatch` | Weekly canary — calls fresh workflow |
+| `e2e-eks-oidc-gpu.yml` | `pull_request_target` (`e2e-gpu` label) / `workflow_dispatch` | GPU lane — fresh deploy with the default GPU pool + GPU tests, destroys after; the label is single-shot (removed as the run starts) |
 | `e2e-eks-oidc-job.yml` | `workflow_call` | Reusable EKS E2E job (called by the above) |
 | `e2e-build-image.yml` | `workflow_call` | Reusable build-and-push E2E image to ECR (`TEMPLATE` build-arg selects base vs eks-oidc for pypi-mode installs) |
 

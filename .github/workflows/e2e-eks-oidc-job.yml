@@ -42,6 +42,11 @@ on:
         required: false
         type: string
         default: ""
+      gpu:
+        description: "GPU mode: deployment has the default GPU pool, GPU tests enabled"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   test:
@@ -89,7 +94,7 @@ jobs:
       - name: Generate .env
         run: >-
           just env-setup-eks sandbox-e2e sandbox-ci ${{ inputs.oauth-app-num }}
-          "org=jupyter-infra,team=jupyter-deploy-e2e-app-access,rbac-team=jupyter-deploy-e2e-app-access,admin-roles=[\"Admin\",\"DeployRole\",\"jupyter-infra-ci-e2e-6a3e2625\"]"
+          "org=jupyter-infra,team=jupyter-deploy-e2e-app-access,rbac-team=jupyter-deploy-e2e-app-access,admin-roles=[\"Admin\",\"DeployRole\",\"jupyter-infra-ci-e2e-6a3e2625\"]${{ inputs.gpu && ',enable-default-gpu-pool=true,gpu-tests=1' || '' }}"
 
       - name: Import auth state
         run: just auth-import sandbox-ci
