@@ -95,11 +95,11 @@ e2e-up no_cache="false":
     mkdir -p {{justfile_directory()}}/.auth
 
     # Update .env file with current values
-    sed -i 's/^HOST_UID=.*/HOST_UID={{HOST_UID}}/' {{justfile_directory()}}/.env
-    sed -i 's/^HOST_GID=.*/HOST_GID={{HOST_GID}}/' {{justfile_directory()}}/.env
+    sed -i.bak 's/^HOST_UID=.*/HOST_UID={{HOST_UID}}/' {{justfile_directory()}}/.env
+    sed -i.bak 's/^HOST_GID=.*/HOST_GID={{HOST_GID}}/' {{justfile_directory()}}/.env
     # Set Dockerfile path for compose (finch/nerdctl reads vars from .env, not process env)
     if grep -q '^E2E_DOCKERFILE=' {{justfile_directory()}}/.env; then
-        sed -i 's|^E2E_DOCKERFILE=.*|E2E_DOCKERFILE={{e2e-image-dir}}/Dockerfile|' {{justfile_directory()}}/.env
+        sed -i.bak 's|^E2E_DOCKERFILE=.*|E2E_DOCKERFILE={{e2e-image-dir}}/Dockerfile|' {{justfile_directory()}}/.env
     else
         echo 'E2E_DOCKERFILE={{e2e-image-dir}}/Dockerfile' >> {{justfile_directory()}}/.env
     fi
@@ -107,11 +107,14 @@ e2e-up no_cache="false":
     _AWS_REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}"
     if [ -n "$_AWS_REGION" ]; then
         if grep -q '^AWS_REGION=' {{justfile_directory()}}/.env; then
-            sed -i "s|^AWS_REGION=.*|AWS_REGION=$_AWS_REGION|" {{justfile_directory()}}/.env
+            sed -i.bak "s|^AWS_REGION=.*|AWS_REGION=$_AWS_REGION|" {{justfile_directory()}}/.env
         else
             echo "AWS_REGION=$_AWS_REGION" >> {{justfile_directory()}}/.env
         fi
     fi
+    # BSD sed's -i requires an extension argument, so the portable form writes
+    # .env.bak; drop it once the in-place edits are done.
+    rm -f {{justfile_directory()}}/.env.bak
 
     if [ "{{no_cache}}" = "true" ]; then
         echo "Building with --no-cache..."
@@ -243,10 +246,10 @@ test-e2e project_dir="sandbox-e2e" test_filter="" options="" template=default-te
     rm -rf "{{justfile_directory()}}/test-results"/*
 
     # Update .env file with current values
-    sed -i 's/^HOST_UID=.*/HOST_UID={{HOST_UID}}/' {{justfile_directory()}}/.env
-    sed -i 's/^HOST_GID=.*/HOST_GID={{HOST_GID}}/' {{justfile_directory()}}/.env
+    sed -i.bak 's/^HOST_UID=.*/HOST_UID={{HOST_UID}}/' {{justfile_directory()}}/.env
+    sed -i.bak 's/^HOST_GID=.*/HOST_GID={{HOST_GID}}/' {{justfile_directory()}}/.env
     if grep -q '^E2E_DOCKERFILE=' {{justfile_directory()}}/.env; then
-        sed -i 's|^E2E_DOCKERFILE=.*|E2E_DOCKERFILE={{e2e-image-dir}}/Dockerfile|' {{justfile_directory()}}/.env
+        sed -i.bak 's|^E2E_DOCKERFILE=.*|E2E_DOCKERFILE={{e2e-image-dir}}/Dockerfile|' {{justfile_directory()}}/.env
     else
         echo 'E2E_DOCKERFILE={{e2e-image-dir}}/Dockerfile' >> {{justfile_directory()}}/.env
     fi
@@ -254,11 +257,14 @@ test-e2e project_dir="sandbox-e2e" test_filter="" options="" template=default-te
     _AWS_REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || echo "")}"
     if [ -n "$_AWS_REGION" ]; then
         if grep -q '^AWS_REGION=' {{justfile_directory()}}/.env; then
-            sed -i "s|^AWS_REGION=.*|AWS_REGION=$_AWS_REGION|" {{justfile_directory()}}/.env
+            sed -i.bak "s|^AWS_REGION=.*|AWS_REGION=$_AWS_REGION|" {{justfile_directory()}}/.env
         else
             echo "AWS_REGION=$_AWS_REGION" >> {{justfile_directory()}}/.env
         fi
     fi
+    # BSD sed's -i requires an extension argument, so the portable form writes
+    # .env.bak; drop it once the in-place edits are done.
+    rm -f {{justfile_directory()}}/.env.bak
 
     # Parse skip-sync, ci-dir, and image from options early (needed before compose up)
     SKIP_SYNC="false"
