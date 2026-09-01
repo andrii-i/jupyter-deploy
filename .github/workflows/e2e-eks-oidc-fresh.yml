@@ -259,7 +259,9 @@ jobs:
   # All mutating EKS tests, selected by the `mutating` marker so new ones (GPU,
   # autoscaling, …) are picked up without editing this workflow. The fresh deploy
   # uses tests/e2e/configurations/base.yaml, which satisfies their config needs
-  # (e.g. idle shutdown's workspaces_idle_shutdown_timeout_min=1).
+  # (e.g. idle shutdown's workspaces_idle_shutdown_timeout_min=1). The GPU pool
+  # lifecycle test adds two jd config + jd up cycles and a GPU node (~30-40 min),
+  # hence the 120-minute timeout.
   test-mutating:
     name: "Mutating tests"
     needs: [build-image, test-non-mutating]
@@ -272,7 +274,7 @@ jobs:
       ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
       marker: mutating
       mutate: true
-      timeout-minutes: 60
+      timeout-minutes: 120
 
   # --- Cleanup: destroy cluster (only if all tests passed) ---
 
