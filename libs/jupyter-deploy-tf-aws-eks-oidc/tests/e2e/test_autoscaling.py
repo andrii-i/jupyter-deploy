@@ -2,7 +2,6 @@
 
 import subprocess
 import time
-from collections.abc import Callable
 
 import pytest
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
@@ -16,10 +15,10 @@ from pytest_jupyter_deploy.workspaces.kubectl import (
     kubectl_delete_workspace,
 )
 
-from .conftest import WORKSPACES_DIR
+from .conftest import WORKSPACE_NAMESPACE, WORKSPACES_DIR
+from .test_utils import kubectl_stdout, poll
 
 ROUTER_NAMESPACE = "jupyter-k8s-router"
-WORKSPACE_NAMESPACE = "default"
 KARPENTER_NAMESPACE = "karpenter"
 
 # Routing nodes are tainted with jupyter-deploy/role=routing:NoSchedule so ballast
@@ -34,20 +33,6 @@ BALLAST_IMAGE = "public.ecr.aws/docker/library/busybox:1.36"
 _SCALE_WORKSPACE = "e2e-autoscaling-workspace"
 
 
-def _kubectl(*args: str) -> str:
-    result = subprocess.run(["kubectl", *args], capture_output=True, text=True, check=True)
-    return result.stdout.strip()
-
-
-def _poll(condition: "Callable[[], bool]", timeout_s: int, interval_s: int = 5, msg: str = "") -> None:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        if condition():
-            return
-        time.sleep(interval_s)
-    raise TimeoutError(f"Condition not met within {timeout_s}s: {msg}")
-
-
 # ── KEDA HPAs ────────────────────────────────────────────────────────────────
 
 
@@ -56,7 +41,9 @@ def test_keda_hpas_exist(e2e_deployment: EndToEndDeployment) -> None:
     """KEDA must create HPAs for traefik, authmiddleware, and web-app."""
     e2e_deployment.ensure_deployed()
 
-    output = _kubectl("get", "hpa", "-n", ROUTER_NAMESPACE, "--no-headers", "-o", "custom-columns=NAME:.metadata.name")
+    output = kubectl_stdout(
+        "get", "hpa", "-n", ROUTER_NAMESPACE, "--no-headers", "-o", "custom-columns=NAME:.metadata.name"
+    )
     hpa_names = set(output.splitlines())
 
     assert "keda-hpa-traefik" in hpa_names, f"Expected keda-hpa-traefik HPA, got: {hpa_names}"
@@ -75,7 +62,7 @@ def test_keda_hpas_reference_correct_deployments(e2e_deployment: EndToEndDeploym
         "keda-hpa-web-app": "web-app",
     }
     for hpa_name, deployment_name in expected.items():
-        ref = _kubectl(
+        ref = kubectl_stdout(
             "get",
             "hpa",
             hpa_name,
@@ -123,7 +110,7 @@ def test_routing_deployments_have_no_hardcoded_replicas(e2e_deployment: EndToEnd
 
 def _workspaces_nodes() -> set[str]:
     """Return the set of node names currently labeled as workspaces-role nodes."""
-    output = _kubectl(
+    output = kubectl_stdout(
         "get",
         "nodes",
         "-l",
@@ -138,7 +125,7 @@ def _workspaces_nodes() -> set[str]:
 
 def _workspace_pod_node() -> str:
     """Return the node hosting the _SCALE_WORKSPACE pod, or '' if none is scheduled yet."""
-    return _kubectl(
+    return kubectl_stdout(
         "get",
         "pods",
         "-n",
@@ -174,7 +161,7 @@ def test_karpenter_workspace_provisioning_and_scale_to_zero(e2e_deployment: EndT
     # pod to be gone so its node isn't misattributed to this run.
     try:
         kubectl_delete_workspace(_SCALE_WORKSPACE)
-        _poll(
+        poll(
             lambda: _workspace_pod_node() == "",
             timeout_s=300,
             msg="pre-test cleanup: leftover workspace pod did not terminate",
@@ -192,10 +179,10 @@ def test_karpenter_workspace_provisioning_and_scale_to_zero(e2e_deployment: EndT
         pod_node = _workspace_pod_node()
         assert pod_node, f"Could not find pod node for workspace {_SCALE_WORKSPACE}"
 
-        node_role = _kubectl("get", "node", pod_node, "-o", "jsonpath={.metadata.labels.jupyter-deploy/role}")
+        node_role = kubectl_stdout("get", "node", pod_node, "-o", "jsonpath={.metadata.labels.jupyter-deploy/role}")
         assert node_role == "workspaces", f"Workspace pod landed on node with role '{node_role}', expected 'workspaces'"
 
-        nodepool = _kubectl("get", "node", pod_node, "-o", r"jsonpath={.metadata.labels.karpenter\.sh/nodepool}")
+        nodepool = kubectl_stdout("get", "node", pod_node, "-o", r"jsonpath={.metadata.labels.karpenter\.sh/nodepool}")
         assert nodepool == "workspace-cpu", f"Workspace pod node has nodepool '{nodepool}', expected 'workspace-cpu'"
 
         # Nodes Karpenter provisioned for this workspace (excludes any pre-existing
@@ -212,7 +199,7 @@ def test_karpenter_workspace_provisioning_and_scale_to_zero(e2e_deployment: EndT
 
     # After deletion Karpenter should terminate the node(s) it added for this
     # workspace (consolidateAfter is 60s; allow up to 10 minutes for drain + delete).
-    _poll(
+    poll(
         lambda: _workspaces_nodes().isdisjoint(new_nodes),
         timeout_s=600,
         msg=f"nodes {new_nodes} were not terminated after workspace deletion",
@@ -271,7 +258,7 @@ def test_karpenter_routing_nodepool_scales_up(e2e_deployment: EndToEndDeployment
             time.sleep(10)
 
         if not scaled_up:
-            karpenter_logs = _kubectl(
+            karpenter_logs = kubectl_stdout(
                 "logs",
                 "-n",
                 KARPENTER_NAMESPACE,
