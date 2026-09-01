@@ -11,6 +11,8 @@ from pytest_jupyter_deploy.cli import JDCliError
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
 from pytest_jupyter_deploy.plugin import skip_if_testvars_not_set
 
+from .test_utils import require_gpu_pool
+
 
 def _get_manifest_components(e2e_deployment: EndToEndDeployment) -> dict:
     """Read component definitions from the project manifest."""
@@ -254,6 +256,7 @@ def test_nvidia_device_plugin_daemonset_when_gpu_enabled(e2e_deployment: EndToEn
     non-GPU deployments).
     """
     e2e_deployment.ensure_deployed()
+    require_gpu_pool()
 
     # check=False: with check=True an absent daemonset dies as CalledProcessError
     # before the assertion below can surface stdout/stderr in the test report.

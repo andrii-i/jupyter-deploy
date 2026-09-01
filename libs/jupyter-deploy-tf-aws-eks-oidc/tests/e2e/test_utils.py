@@ -4,6 +4,7 @@ import subprocess
 import time
 from collections.abc import Callable
 
+import pytest
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
 from pytest_jupyter_deploy.kubernetes.nodes import (
     get_node_allocatable_gpu_count,
@@ -34,6 +35,36 @@ def poll(condition: Callable[[], bool], timeout_s: int, interval_s: int = 5, msg
             return
         time.sleep(interval_s)
     raise TimeoutError(f"Condition not met within {timeout_s}s: {msg}")
+
+
+def karpenter_resource_absent(resource: str, name: str) -> bool:
+    """True once the named cluster resource no longer exists.
+
+    Only a NotFound error counts as absent: treating any kubectl failure as
+    absence would let a lost cluster connection pass a deletion assertion.
+    """
+    result = subprocess.run(["kubectl", "get", resource, name], capture_output=True, text=True, check=False)
+    if result.returncode == 0:
+        return False
+    if "NotFound" in result.stderr:
+        return True
+    raise RuntimeError(f"kubectl get {resource} {name} failed: {result.stderr.strip()}")
+
+
+def gpu_pool_deployed() -> bool:
+    """True when the cluster currently has the workspace-gpu NodePool."""
+    return not karpenter_resource_absent("nodepools.karpenter.sh", GPU_NODEPOOL)
+
+
+def require_gpu_pool() -> None:
+    """Skip the calling test unless the deployment currently has the GPU pool.
+
+    JD_E2E_GPU_ENABLED alone does not imply the pool exists: CI runs set it
+    against deployments with enable_default_gpu_pool off, and the pool
+    lifecycle test enables the pool itself.
+    """
+    if not gpu_pool_deployed():
+        pytest.skip("Deployment does not have the workspace-gpu NodePool (enable_default_gpu_pool off)")
 
 
 def gpu_node_count() -> int:
