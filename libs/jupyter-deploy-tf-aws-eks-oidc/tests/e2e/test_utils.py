@@ -21,6 +21,8 @@ GPU_WORKSPACE = "e2e-gpu-workspace"
 GPU_ROLE = "workspaces-gpu"
 GPU_ROLE_SELECTOR = f"jupyter-deploy/role={GPU_ROLE}"
 GPU_NODEPOOL = "workspace-gpu"
+# The karpenter-nodepools chart names each pool's EC2NodeClass after the pool.
+GPU_EC2NODECLASS = GPU_NODEPOOL
 
 
 def kubectl_stdout(*args: str) -> str:
