@@ -54,8 +54,9 @@ jobs:
   # deployment to be configured a certain way (e.g. idle shutdown needs
   # workspaces_idle_shutdown_timeout_min=1, set in tests/e2e/configurations/base.yaml);
   # a restored sandbox deployed with an older config may fail those. The GPU pool
-  # lifecycle test adds two jd config + jd up cycles and a GPU node (~30-40 min),
-  # hence the 120-minute timeout.
+  # lifecycle test adds two jd config + jd up cycles and two GPU workspace
+  # cycles including the torch/CUDA notebook (about an hour typical), hence
+  # the 180-minute timeout.
   test-mutating:
     name: "Mutating tests"
     needs: [build-image, test-non-mutating]
@@ -68,4 +69,4 @@ jobs:
       ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
       marker: mutating
       mutate: true
-      timeout-minutes: 120
+      timeout-minutes: 180
