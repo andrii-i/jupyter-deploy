@@ -324,5 +324,17 @@ jobs:
       - name: Restore EKS project
         run: just ci-restore-eks ${{ inputs.oauth-app-num }} sandbox-ci sandbox-e2e
 
+      # deployment_id must be captured before the down: the destroy removes the
+      # terraform outputs along with the state.
       - name: Take down the deployment
-        run: cd sandbox-e2e && uv run jd down -y -v
+        id: takedown
+        run: |
+          DEPLOYMENT_ID="$(cd sandbox-e2e && uv run jd show -o deployment_id --text || true)"
+          echo "deployment-id=${DEPLOYMENT_ID}" >> "$GITHUB_OUTPUT"
+          cd sandbox-e2e && uv run jd down -y -v
+
+      # Anything still tagged DeploymentId leaked from the destroy. Known blind
+      # spot: controller-created NLB/ENIs/SGs carry no terraform tags.
+      - name: Scan for orphaned resources
+        if: steps.takedown.outputs.deployment-id != ''
+        run: uv run python scripts/orphan_scan.py "${{ steps.takedown.outputs.deployment-id }}"
