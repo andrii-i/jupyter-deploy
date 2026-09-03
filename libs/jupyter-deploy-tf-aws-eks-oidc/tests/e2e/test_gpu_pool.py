@@ -1,13 +1,14 @@
 """E2E test for the enable_default_gpu_pool on/off lifecycle on the EKS OIDC template.
 
 Unlike test_workspace_gpu.py, this does not need a GPU-enabled deployment: it
-turns the flag on itself (jd config + jd up), runs the GPU workspace lifecycle,
-turns it off, and verifies the pool tears down cleanly. Restores the flag to its
-original value on any failure.
+turns the flag on itself (jd config + jd up), runs the GPU verifications while
+the pool exists, turns the flag off, and verifies the pool tears down cleanly.
+Restores the flag to its original value on any failure.
 """
 
 import pytest
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
+from pytest_jupyter_deploy.oauth2_proxy.dex import DexGitHubOAuth2ProxyApplication
 from pytest_jupyter_deploy.plugin import skip_if_testvars_not_set
 
 from .test_utils import (
@@ -17,7 +18,10 @@ from .test_utils import (
     gpu_pool_deployed,
     karpenter_resource_absent,
     poll,
+    verify_gpu_pool_listed,
+    verify_gpu_workspace_kernel_sees_cuda,
     verify_gpu_workspace_provisioning_and_scale_to_zero,
+    verify_nvidia_device_plugin_daemonset,
 )
 
 GPU_POOL_FLAG = "enable_default_gpu_pool"
@@ -42,15 +46,20 @@ def _apply_gpu_pool_flag(e2e_deployment: EndToEndDeployment, enabled: bool) -> N
     e2e_deployment.ensure_deployed_with([])
 
 
-@skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
+@skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED", "JD_E2E_USER"])
 @pytest.mark.mutating
 @pytest.mark.usefixtures("kubernetes_cluster_login")
-def test_gpu_pool_enable_disable_drains_and_deletes_cleanly(e2e_deployment: EndToEndDeployment) -> None:
-    """Flag on → GPU workspace lifecycle → flag off → pool fully deleted.
+def test_gpu_pool_enable_disable_drains_and_deletes_cleanly(
+    e2e_deployment: EndToEndDeployment,
+    dex_oauth_app: DexGitHubOAuth2ProxyApplication,
+) -> None:
+    """Flag on → GPU surface, workspace lifecycle, kernel CUDA → flag off → pool fully deleted.
 
-    The flag-off half is the #349 regression check: the workspace-gpu NodePool
-    and EC2NodeClass deletions must complete instead of hanging on the
-    Karpenter termination finalizers.
+    While the pool exists, runs the GPU verifications that otherwise require a
+    GPU-enabled deployment: pool listed, device-plugin DaemonSet, the workspace
+    lifecycle, and the torch/CUDA notebook. The flag-off half is the #349
+    regression check: the workspace-gpu NodePool and EC2NodeClass deletions
+    must complete instead of hanging on the Karpenter termination finalizers.
     """
     e2e_deployment.ensure_deployed()
     original = _gpu_pool_flag(e2e_deployment)
@@ -58,8 +67,11 @@ def test_gpu_pool_enable_disable_drains_and_deletes_cleanly(e2e_deployment: EndT
     try:
         _apply_gpu_pool_flag(e2e_deployment, True)
         assert gpu_pool_deployed(), "workspace-gpu NodePool missing after enabling enable_default_gpu_pool"
+        verify_gpu_pool_listed(e2e_deployment)
+        verify_nvidia_device_plugin_daemonset()
 
         verify_gpu_workspace_provisioning_and_scale_to_zero(e2e_deployment)
+        verify_gpu_workspace_kernel_sees_cuda(e2e_deployment, dex_oauth_app)
 
         _apply_gpu_pool_flag(e2e_deployment, False)
         poll(
