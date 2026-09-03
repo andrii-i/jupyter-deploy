@@ -3,6 +3,7 @@
 import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
@@ -10,12 +11,17 @@ from pytest_jupyter_deploy.kubernetes.nodes import (
     get_node_allocatable_gpu_count,
     get_node_names,
 )
+from pytest_jupyter_deploy.notebook import delete_notebook, run_notebook_in_jupyterlab, upload_notebook
+from pytest_jupyter_deploy.oauth2_proxy.dex import DexGitHubOAuth2ProxyApplication
 from pytest_jupyter_deploy.workspaces.kubectl import (
     kubectl_apply_workspace,
     kubectl_delete_workspace,
+    kubectl_get_workspace_access_url,
 )
 
 from .conftest import WORKSPACE_NAMESPACE, WORKSPACES_DIR
+
+NOTEBOOKS_DIR = Path(__file__).parent / "notebooks"
 
 GPU_WORKSPACE = "e2e-gpu-workspace"
 GPU_ROLE = "workspaces-gpu"
@@ -157,6 +163,51 @@ def verify_gpu_workspace_provisioning_and_scale_to_zero(e2e_deployment: EndToEnd
             ["jupyter-deploy", "server", "exec", "--name", GPU_WORKSPACE, "--", "nvidia-smi"]
         )
         assert "NVIDIA-SMI" in result.stdout, f"nvidia-smi did not see a device:\n{result.stdout}"
+    finally:
+        kubectl_delete_workspace(GPU_WORKSPACE)
+
+    poll(
+        lambda: gpu_node_count() == 0,
+        timeout_s=600,
+        msg="gpu NodePool did not scale to zero after workspace deletion",
+    )
+
+
+def verify_gpu_workspace_kernel_sees_cuda(
+    e2e_deployment: EndToEndDeployment,
+    dex_oauth_app: DexGitHubOAuth2ProxyApplication,
+) -> None:
+    """Run the gpu_check notebook through the JupyterLab UI on a GPU workspace.
+
+    nvidia-smi, torch installed at test time via uv (the stock image ships no
+    CUDA userland; the CUDA-enabled wheel comes from the torch package itself),
+    then torch.cuda.is_available from the kernel. Deletes the workspace and
+    waits for the GPU pool to scale back to zero.
+    """
+    e2e_deployment.ensure_deployed()
+
+    kubectl_apply_workspace(GPU_WORKSPACE, WORKSPACES_DIR)
+    try:
+        # First start provisions a node and pulls the image: minutes, not seconds.
+        e2e_deployment.cli.poll_scoped_server_status(GPU_WORKSPACE, "Running", timeout_s=600)
+        e2e_deployment.cli.wait_for_workspace_pod_exec_ready(GPU_WORKSPACE)
+
+        access_url = kubectl_get_workspace_access_url(GPU_WORKSPACE, WORKSPACE_NAMESPACE)
+        dex_oauth_app.verify_workspace_accessible(access_url)
+
+        notebook_path = NOTEBOOKS_DIR / "gpu_check.ipynb"
+        server_path = upload_notebook(
+            e2e_deployment,
+            notebook_path,
+            "e2e-test/gpu_check.ipynb",
+            name=GPU_WORKSPACE,
+            scope=WORKSPACE_NAMESPACE,
+        )
+
+        # torch pulls ~2.5 GiB of CUDA wheels; long timeout, slow poll.
+        run_notebook_in_jupyterlab(dex_oauth_app.page, server_path, timeout_ms=300000, poll_interval_ms=5000)
+
+        delete_notebook(e2e_deployment, server_path, name=GPU_WORKSPACE, scope=WORKSPACE_NAMESPACE)
     finally:
         kubectl_delete_workspace(GPU_WORKSPACE)
 
