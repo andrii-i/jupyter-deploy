@@ -6,29 +6,16 @@ skipped at runtime unless the deployment currently has the GPU pool
 off by enabling and disabling the pool itself.
 """
 
-from pathlib import Path
-
 import pytest
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
-from pytest_jupyter_deploy.notebook import delete_notebook, run_notebook_in_jupyterlab, upload_notebook
 from pytest_jupyter_deploy.oauth2_proxy.dex import DexGitHubOAuth2ProxyApplication
 from pytest_jupyter_deploy.plugin import skip_if_testvars_not_set
-from pytest_jupyter_deploy.workspaces.kubectl import (
-    kubectl_apply_workspace,
-    kubectl_delete_workspace,
-    kubectl_get_workspace_access_url,
-)
 
-from .conftest import WORKSPACE_NAMESPACE, WORKSPACES_DIR
 from .test_utils import (
-    GPU_WORKSPACE,
-    gpu_node_count,
-    poll,
     require_gpu_pool,
+    verify_gpu_workspace_kernel_sees_cuda,
     verify_gpu_workspace_provisioning_and_scale_to_zero,
 )
-
-NOTEBOOKS_DIR = Path(__file__).parent / "notebooks"
 
 
 @skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
@@ -67,33 +54,4 @@ def test_gpu_workspace_kernel_sees_cuda(
     e2e_deployment.ensure_deployed()
     require_gpu_pool()
 
-    kubectl_apply_workspace(GPU_WORKSPACE, WORKSPACES_DIR)
-    try:
-        # First start provisions a node and pulls the image: minutes, not seconds.
-        e2e_deployment.cli.poll_scoped_server_status(GPU_WORKSPACE, "Running", timeout_s=600)
-        e2e_deployment.cli.wait_for_workspace_pod_exec_ready(GPU_WORKSPACE)
-
-        access_url = kubectl_get_workspace_access_url(GPU_WORKSPACE, WORKSPACE_NAMESPACE)
-        dex_oauth_app.verify_workspace_accessible(access_url)
-
-        notebook_path = NOTEBOOKS_DIR / "gpu_check.ipynb"
-        server_path = upload_notebook(
-            e2e_deployment,
-            notebook_path,
-            "e2e-test/gpu_check.ipynb",
-            name=GPU_WORKSPACE,
-            scope=WORKSPACE_NAMESPACE,
-        )
-
-        # torch pulls ~2.5 GiB of CUDA wheels; long timeout, slow poll.
-        run_notebook_in_jupyterlab(dex_oauth_app.page, server_path, timeout_ms=300000, poll_interval_ms=5000)
-
-        delete_notebook(e2e_deployment, server_path, name=GPU_WORKSPACE, scope=WORKSPACE_NAMESPACE)
-    finally:
-        kubectl_delete_workspace(GPU_WORKSPACE)
-
-    poll(
-        lambda: gpu_node_count() == 0,
-        timeout_s=600,
-        msg="gpu NodePool did not scale to zero after workspace deletion",
-    )
+    verify_gpu_workspace_kernel_sees_cuda(e2e_deployment, dex_oauth_app)
