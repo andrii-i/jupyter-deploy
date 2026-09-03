@@ -73,6 +73,27 @@ def gpu_node_count() -> int:
     return len(get_node_names(GPU_ROLE_SELECTOR))
 
 
+def verify_gpu_pool_listed(e2e_deployment: EndToEndDeployment) -> None:
+    """jd pool list must surface the synthesized workspace-gpu NodePool."""
+    result = e2e_deployment.cli.run_command(["jupyter-deploy", "pool", "list"])
+    assert GPU_NODEPOOL in result.stdout, f"Expected pool '{GPU_NODEPOOL}' in pool list output:\n{result.stdout}"
+
+
+def verify_nvidia_device_plugin_daemonset() -> None:
+    """The device-plugin DaemonSet must exist once a GPU pool is configured."""
+    # check=False: with check=True an absent daemonset dies as CalledProcessError
+    # before the assertion below can surface stdout/stderr in the test report.
+    result = subprocess.run(
+        ["kubectl", "get", "daemonset", "nvidia-device-plugin", "-n", "kube-system", "-o", "jsonpath={.metadata.name}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.stdout.strip() == "nvidia-device-plugin", (
+        f"device plugin daemonset missing: {result.stdout} {result.stderr}"
+    )
+
+
 def verify_gpu_workspace_provisioning_and_scale_to_zero(e2e_deployment: EndToEndDeployment) -> None:
     """Run the GPU workspace lifecycle against a deployment with the GPU pool.
 
