@@ -1,57 +1,263 @@
-"""E2E tests for the GPU workspace journey on the EKS OIDC template.
+"""E2E tests for the GPU feature on the EKS OIDC template.
 
-Gated on JD_E2E_GPU_ENABLED (needs G/VT on-demand quota in the account), and
-skipped at runtime unless the deployment currently has the GPU pool
-(enable_default_gpu_pool). test_gpu_pool.py covers deployments with the flag
-off by enabling and disabling the pool itself.
+One enable_default_gpu_pool on->off window: the first case turns the flag on
+(jd config + jd up), the ordered cases run the kubectl and UI critical paths
+(each running the torch/CUDA notebook) plus the scale-to-zero check, and the
+last case turns the flag off and verifies the pool tears down fully (#349).
+gpu_pool_flag_guard restores the flag if any case leaves the window open.
+Gated on JD_E2E_GPU_ENABLED (needs G/VT on-demand quota in the account).
 """
+
+import contextlib
+from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
+from pytest_jupyter_deploy.kubernetes.kubectl import resource_absent, run_kubectl
+from pytest_jupyter_deploy.kubernetes.nodes import get_node_allocatable_gpu_count, get_node_names
+from pytest_jupyter_deploy.notebook import delete_notebook, run_notebook_in_jupyterlab, upload_notebook
 from pytest_jupyter_deploy.oauth2_proxy.dex import DexGitHubOAuth2ProxyApplication
 from pytest_jupyter_deploy.plugin import skip_if_testvars_not_set
-
-from .test_utils import (
-    require_gpu_pool,
-    verify_gpu_workspace_kernel_sees_cuda,
-    verify_gpu_workspace_provisioning_and_scale_to_zero,
+from pytest_jupyter_deploy.polling import poll
+from pytest_jupyter_deploy.workspaces.kubectl import (
+    kubectl_apply_workspace,
+    kubectl_delete_workspace,
+    kubectl_get_workspace_access_url,
 )
+from pytest_jupyter_deploy.workspaces.web_app import WebAppNavigator
+
+from .conftest import GPU_NODEPOOL, WORKSPACE_NAMESPACE, WORKSPACES_DIR, gpu_pool_deployed, require_gpu_pool
+
+NOTEBOOKS_DIR = Path(__file__).parent / "notebooks"
+
+GPU_POOL_FLAG = "enable_default_gpu_pool"
+GPU_WORKSPACE = "e2e-gpu-workspace"
+# Display name of the default GPU WorkspaceTemplate the flag synthesizes
+# (engine/platform_karpenter.tf), rendered as a card on the create page.
+GPU_TEMPLATE_DISPLAY_NAME = "JupyterLab GPU"
+GPU_ROLE = "workspaces-gpu"
+GPU_ROLE_SELECTOR = f"jupyter-deploy/role={GPU_ROLE}"
+# The karpenter-nodepools chart names each pool's EC2NodeClass after the pool.
+GPU_EC2NODECLASS = GPU_NODEPOOL
+
+ORDER_GPU = 10
+
+# Bound for the Karpenter termination finalizers to clear after the flag-off
+# apply; #349's stuck finalizer never clears, so a timeout is the regression.
+POOL_REMOVAL_TIMEOUT_S = 600
+
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.mutating,
+    pytest.mark.usefixtures("kubernetes_cluster_login", "gpu_pool_flag_guard"),
+]
 
 
-@skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
-@pytest.mark.mutating
-@pytest.mark.usefixtures("kubernetes_cluster_login")
-def test_gpu_workspace_provisioning_nvidia_smi_and_scale_to_zero(e2e_deployment: EndToEndDeployment) -> None:
-    """Full GPU workspace lifecycle: fenced provisioning, a visible device, scale-to-zero.
+def _kubectl_stdout(*args: str) -> str:
+    return run_kubectl(*args, check=True).stdout.strip()
 
-    1. Create a workspace from the jupyterlab-gpu template
-    2. Karpenter provisions a workspace-gpu node (role label + taint + gpu.present)
-    3. The device plugin advertises nvidia.com/gpu and nvidia-smi sees the device
-    4. Delete → the GPU pool scales back to zero
+
+def _gpu_node_count() -> int:
+    return len(get_node_names(GPU_ROLE_SELECTOR))
+
+
+def _apply_gpu_pool_flag(e2e_deployment: EndToEndDeployment, enabled: bool) -> None:
+    """Record the flag in variables.yaml, then apply with jd config + jd up.
+
+    jd config exposes the variable only as a set-true flag (typer generates no
+    --no- form for explicitly named bool options), so both directions go
+    through the variables.yaml override.
     """
+    e2e_deployment.update_override_value(GPU_POOL_FLAG, enabled)
+    e2e_deployment.ensure_deployed_with([])
+
+
+@pytest.fixture(scope="module")
+def gpu_pool_flag_guard(e2e_deployment: EndToEndDeployment) -> Generator[None, None, None]:
+    """Restore enable_default_gpu_pool to its pre-module value if a case left it flipped."""
     e2e_deployment.ensure_deployed()
-    require_gpu_pool()
+    original = bool(e2e_deployment.read_override_value(GPU_POOL_FLAG))
+    yield
+    if bool(e2e_deployment.read_override_value(GPU_POOL_FLAG)) != original:
+        # A live GPU pod pins the pool; drop leftovers before the restoring apply.
+        with contextlib.suppress(Exception):
+            kubectl_delete_workspace(GPU_WORKSPACE)
+        _apply_gpu_pool_flag(e2e_deployment, original)
 
-    verify_gpu_workspace_provisioning_and_scale_to_zero(e2e_deployment)
+
+@pytest.mark.order(ORDER_GPU)
+@skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
+def test_enable_gpu_pool(e2e_deployment: EndToEndDeployment) -> None:
+    """Enabling the flag creates the workspace-gpu pool and installs the device plugin."""
+    e2e_deployment.ensure_deployed()
+    _apply_gpu_pool_flag(e2e_deployment, True)
+
+    assert gpu_pool_deployed(), "workspace-gpu NodePool missing after enabling enable_default_gpu_pool"
+
+    result = e2e_deployment.cli.run_command(["jupyter-deploy", "pool", "list"])
+    assert GPU_NODEPOOL in result.stdout, f"Expected pool '{GPU_NODEPOOL}' in pool list output:\n{result.stdout}"
+
+    daemonset = run_kubectl(
+        "get", "daemonset", "nvidia-device-plugin", "-n", "kube-system", "-o", "jsonpath={.metadata.name}"
+    )
+    assert daemonset.stdout.strip() == "nvidia-device-plugin", (
+        f"device plugin daemonset missing: {daemonset.stdout} {daemonset.stderr}"
+    )
 
 
+@pytest.mark.order(ORDER_GPU + 1)
 @skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED", "JD_E2E_USER"])
-@pytest.mark.mutating
-@pytest.mark.usefixtures("kubernetes_cluster_login")
-def test_gpu_workspace_kernel_sees_cuda(
+def test_kubectl_gpu_workspace_runs_cuda_notebook(
     e2e_deployment: EndToEndDeployment,
     dex_oauth_app: DexGitHubOAuth2ProxyApplication,
 ) -> None:
-    """The notebook kernel can install torch and use CUDA on a GPU workspace.
+    """kubectl critical path: create from the GPU template, await, open, torch sees CUDA.
 
-    Runs the gpu_check notebook through the JupyterLab UI, mirroring the
-    ec2-base precedent: nvidia-smi, torch installed at test time via uv (the
-    stock image ships no CUDA userland; the CUDA-enabled wheel comes from the
-    torch package itself), then torch.cuda.is_available from the kernel.
-    Targets the built-in g-family pool. No torch cleanup is needed: the
-    workspace and its volume are deleted at the end of the test.
+    Also pins the fenced provisioning contract: the pod lands on a workspace-gpu
+    node (role label + taint + nvidia.com/gpu.present) with a registered device.
     """
     e2e_deployment.ensure_deployed()
     require_gpu_pool()
 
-    verify_gpu_workspace_kernel_sees_cuda(e2e_deployment, dex_oauth_app)
+    # Clean up any leftover workspace from a previous test run.
+    with contextlib.suppress(Exception):
+        kubectl_delete_workspace(GPU_WORKSPACE)
+        poll(lambda: _gpu_node_count() == 0, timeout_s=300, msg="pre-test cleanup: gpu node did not terminate")
+
+    kubectl_apply_workspace(GPU_WORKSPACE, WORKSPACES_DIR)
+    try:
+        # First start provisions a node and pulls the image; allow minutes.
+        e2e_deployment.cli.poll_scoped_server_status(GPU_WORKSPACE, "Running", timeout_s=600)
+
+        assert _gpu_node_count() > 0, "Expected at least one gpu node after workspace creation"
+
+        pod_node = _kubectl_stdout(
+            "get",
+            "pods",
+            "-n",
+            WORKSPACE_NAMESPACE,
+            "-l",
+            f"workspace.jupyter.org/workspace-name={GPU_WORKSPACE}",
+            "-o",
+            "jsonpath={.items[0].spec.nodeName}",
+        )
+        assert pod_node, f"Could not find pod node for workspace {GPU_WORKSPACE}"
+
+        node_role = _kubectl_stdout("get", "node", pod_node, "-o", "jsonpath={.metadata.labels.jupyter-deploy/role}")
+        assert node_role == GPU_ROLE, f"GPU workspace pod landed on node with role '{node_role}', expected '{GPU_ROLE}'"
+
+        nodepool = _kubectl_stdout("get", "node", pod_node, "-o", r"jsonpath={.metadata.labels.karpenter\.sh/nodepool}")
+        assert nodepool == GPU_NODEPOOL, f"GPU pod node has nodepool '{nodepool}', expected '{GPU_NODEPOOL}'"
+
+        gpu_present = _kubectl_stdout(
+            "get", "node", pod_node, "-o", r"jsonpath={.metadata.labels.nvidia\.com/gpu\.present}"
+        )
+        assert gpu_present == "true", f"GPU node lacks the nvidia.com/gpu.present label (got '{gpu_present}')"
+
+        taints = _kubectl_stdout("get", "node", pod_node, "-o", "jsonpath={.spec.taints}")
+        assert GPU_ROLE in taints, f"GPU node is not tainted with the {GPU_ROLE} role (taints: {taints})"
+
+        assert get_node_allocatable_gpu_count(pod_node) >= 1, "Device plugin did not register nvidia.com/gpu"
+
+        e2e_deployment.cli.wait_for_workspace_pod_exec_ready(GPU_WORKSPACE)
+        result = e2e_deployment.cli.run_exec_with_retry(
+            ["jupyter-deploy", "server", "exec", "--name", GPU_WORKSPACE, "--", "nvidia-smi"]
+        )
+        assert "NVIDIA-SMI" in result.stdout, f"nvidia-smi did not see a device:\n{result.stdout}"
+
+        access_url = kubectl_get_workspace_access_url(GPU_WORKSPACE, WORKSPACE_NAMESPACE)
+        dex_oauth_app.verify_workspace_accessible(access_url)
+
+        server_path = upload_notebook(
+            e2e_deployment,
+            NOTEBOOKS_DIR / "gpu_check.ipynb",
+            "e2e-test/gpu_check.ipynb",
+            name=GPU_WORKSPACE,
+            scope=WORKSPACE_NAMESPACE,
+        )
+        # torch pulls ~2.5 GiB of CUDA wheels; long timeout, slow poll.
+        run_notebook_in_jupyterlab(dex_oauth_app.page, server_path, timeout_ms=300000, poll_interval_ms=5000)
+        delete_notebook(e2e_deployment, server_path, name=GPU_WORKSPACE, scope=WORKSPACE_NAMESPACE)
+    finally:
+        # Free the single GPU promptly so the UI case can reuse a warm node;
+        # scale-to-zero is asserted once, after the UI case.
+        kubectl_delete_workspace(GPU_WORKSPACE)
+
+
+@pytest.mark.order(ORDER_GPU + 2)
+@skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED", "JD_E2E_USER"])
+def test_ui_created_gpu_workspace_runs_cuda_notebook(
+    e2e_deployment: EndToEndDeployment,
+    dex_oauth_web_app: WebAppNavigator,
+) -> None:
+    """UI critical path: create from the GPU template card, await, open, torch sees CUDA."""
+    e2e_deployment.ensure_deployed()
+    require_gpu_pool()
+
+    name = dex_oauth_web_app.create_workspace_from_template(GPU_TEMPLATE_DISPLAY_NAME)
+    try:
+        # First start provisions a node and pulls the image; allow minutes.
+        dex_oauth_web_app.wait_for_running(timeout=600000)
+
+        dex_oauth_web_app.goto_workspace_list()
+        dex_oauth_web_app.open_workspace_from_card(name)
+        dex_oauth_web_app.verify_jupyterlab_loaded()
+
+        e2e_deployment.cli.wait_for_workspace_pod_exec_ready(name)
+        server_path = upload_notebook(
+            e2e_deployment,
+            NOTEBOOKS_DIR / "gpu_check.ipynb",
+            "e2e-test/gpu_check.ipynb",
+            name=name,
+            scope=WORKSPACE_NAMESPACE,
+        )
+        # torch pulls ~2.5 GiB of CUDA wheels; long timeout, slow poll.
+        run_notebook_in_jupyterlab(dex_oauth_web_app.page, server_path, timeout_ms=300000, poll_interval_ms=5000)
+        delete_notebook(e2e_deployment, server_path, name=name, scope=WORKSPACE_NAMESPACE)
+    finally:
+        # UI deletion is covered in test_web_app; deleting via kubectl avoids the duplicate.
+        kubectl_delete_workspace(name)
+
+
+@pytest.mark.order(ORDER_GPU + 3)
+@skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
+def test_gpu_pool_scales_to_zero_after_workspace_deletion(e2e_deployment: EndToEndDeployment) -> None:
+    """With every GPU workspace deleted, the pool releases its nodes back to zero."""
+    e2e_deployment.ensure_deployed()
+    require_gpu_pool()
+
+    poll(
+        lambda: _gpu_node_count() == 0,
+        timeout_s=600,
+        msg="gpu NodePool did not scale to zero after workspace deletion",
+    )
+
+
+@pytest.mark.order(ORDER_GPU + 4)
+@skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
+def test_disable_gpu_pool_deletes_nodepool_and_ec2nodeclass(e2e_deployment: EndToEndDeployment) -> None:
+    """Disabling the flag drains the nodes and fully deletes the pool (#349).
+
+    The workspace-gpu NodePool and EC2NodeClass deletions must complete instead
+    of hanging on the Karpenter termination finalizers.
+    """
+    e2e_deployment.ensure_deployed()
+    require_gpu_pool()
+
+    _apply_gpu_pool_flag(e2e_deployment, False)
+    poll(
+        lambda: _gpu_node_count() == 0,
+        timeout_s=300,
+        msg="gpu nodes did not drain after disabling the pool",
+    )
+    poll(
+        lambda: resource_absent("nodepools.karpenter.sh", GPU_NODEPOOL),
+        timeout_s=POOL_REMOVAL_TIMEOUT_S,
+        msg="workspace-gpu NodePool was not deleted after disabling the pool",
+    )
+    poll(
+        lambda: resource_absent("ec2nodeclasses.karpenter.k8s.aws", GPU_EC2NODECLASS),
+        timeout_s=POOL_REMOVAL_TIMEOUT_S,
+        msg="workspace-gpu EC2NodeClass was not deleted (stuck termination finalizer, #349)",
+    )
