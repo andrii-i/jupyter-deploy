@@ -286,7 +286,6 @@ jobs:
     if: success() && inputs.destroy-after
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     environment: e2e
     permissions:
       id-token: write
@@ -325,9 +324,12 @@ jobs:
         run: just ci-restore-eks ${{ inputs.oauth-app-num }} sandbox-ci sandbox-e2e
 
       # deployment_id must be captured before the down: the destroy removes the
-      # terraform outputs along with the state.
+      # terraform outputs along with the state. The step is best-effort so the
+      # orphan scan below still runs and reddens on whatever a failed destroy
+      # left behind.
       - name: Take down the deployment
         id: takedown
+        continue-on-error: true
         run: |
           DEPLOYMENT_ID="$(cd sandbox-e2e && uv run jd show -o deployment_id --text || true)"
           echo "deployment-id=${DEPLOYMENT_ID}" >> "$GITHUB_OUTPUT"
