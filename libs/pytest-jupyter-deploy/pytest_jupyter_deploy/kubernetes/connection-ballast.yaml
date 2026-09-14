@@ -1,0 +1,79 @@
+# Connection-holding ballast Deployment for connection-metric autoscaling E2E tests.
+#
+# Each holder pod keeps a fixed number of TLS connections open to the target host,
+# re-sending a keep-alive HEAD every 30s (under typical proxy idle timeouts) and
+# replacing dropped sockets, so a connection-count metric holds steady at the target.
+# Certificate verification is off: in-cluster service DNS names are not on a
+# deployment's public certificate.
+#
+# Rendered by ballast.py via string.Template. The node-selector block is pre-rendered
+# (already indented). NOTE: do not add other placeholder-style tokens to comments here —
+# string.Template would try to substitute them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${name}
+  namespace: ${namespace}
+spec:
+  replicas: ${replicas}
+  selector:
+    matchLabels:
+      app: ${name}
+  template:
+    metadata:
+      labels:
+        app: ${name}
+    spec:
+      nodeSelector:
+${node_selector_yaml}
+      terminationGracePeriodSeconds: 5
+      containers:
+        - name: holder
+          image: ${image}
+          env:
+            - name: TARGET_HOST
+              value: ${target_host}
+            - name: TARGET_PORT
+              value: "${port}"
+            - name: CONNECTIONS
+              value: "${connections}"
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import os, socket, ssl, time
+              host = os.environ["TARGET_HOST"]
+              port = int(os.environ["TARGET_PORT"])
+              target = int(os.environ["CONNECTIONS"])
+              ctx = ssl.create_default_context()
+              ctx.check_hostname = False
+              ctx.verify_mode = ssl.CERT_NONE
+              req = ("HEAD / HTTP/1.1\r\nHost: " + host + "\r\nConnection: keep-alive\r\n\r\n").encode()
+              conns = []
+              while True:
+                  alive = []
+                  for s in conns:
+                      try:
+                          s.sendall(req)
+                          s.recv(4096)
+                          alive.append(s)
+                      except OSError:
+                          try:
+                              s.close()
+                          except OSError:
+                              pass
+                  conns = alive
+                  while len(conns) < target:
+                      try:
+                          raw = socket.create_connection((host, port), timeout=10)
+                          tls = ctx.wrap_socket(raw, server_hostname=host)
+                          tls.sendall(req)
+                          tls.recv(4096)
+                          conns.append(tls)
+                      except OSError:
+                          break
+                  print("holding", len(conns), "connections", flush=True)
+                  time.sleep(30)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi

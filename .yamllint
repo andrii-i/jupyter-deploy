@@ -82,3 +82,4 @@ ignore: |
   **/tests/unit/chart_render_data/golden_*.yaml
   # string.Template manifests (templated blocks, not valid YAML until rendered)
   **/kubernetes/ballast-pod.yaml
+  **/kubernetes/connection-ballast.yaml
