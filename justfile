@@ -360,15 +360,15 @@ test-e2e project_dir="sandbox-e2e" test_filter="" options="" template=default-te
 
     if [ "$IS_DEPLOYMENT_FROM_SCRATCH" = "true" ]; then
         # Deploy from scratch - don't pass --e2e-existing-project (uses default config "base")
-        PYTEST_ARGS="$E2E_TESTS_DIR -m $MARKER --e2e-tests-dir=$E2E_TESTS_DIR"
+        PYTEST_ARGS="$E2E_TESTS_DIR -m \"$MARKER\" --e2e-tests-dir=$E2E_TESTS_DIR"
     else
         # Use existing project
-        PYTEST_ARGS="$E2E_TESTS_DIR -m $MARKER --e2e-tests-dir=$E2E_TESTS_DIR --e2e-existing-project={{project_dir}}"
+        PYTEST_ARGS="$E2E_TESTS_DIR -m \"$MARKER\" --e2e-tests-dir=$E2E_TESTS_DIR --e2e-existing-project={{project_dir}}"
     fi
 
     # Add test filter if provided
     if [ -n "{{test_filter}}" ]; then
-        PYTEST_ARGS="$PYTEST_ARGS -k {{test_filter}}"
+        PYTEST_ARGS="$PYTEST_ARGS -k \"{{test_filter}}\""
     fi
 
     # Default log level
