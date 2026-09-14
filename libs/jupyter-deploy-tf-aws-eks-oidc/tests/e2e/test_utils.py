@@ -123,7 +123,7 @@ def verify_gpu_workspace_provisioning_and_scale_to_zero(e2e_deployment: EndToEnd
 
     kubectl_apply_workspace(GPU_WORKSPACE, WORKSPACES_DIR)
     try:
-        # First start provisions a node and pulls the image: minutes, not seconds.
+        # First start provisions a node and pulls the image; allow minutes.
         e2e_deployment.cli.poll_scoped_server_status(GPU_WORKSPACE, "Running", timeout_s=600)
 
         assert gpu_node_count() > 0, "Expected at least one gpu node after workspace creation"
@@ -188,7 +188,7 @@ def verify_gpu_workspace_kernel_sees_cuda(
 
     kubectl_apply_workspace(GPU_WORKSPACE, WORKSPACES_DIR)
     try:
-        # First start provisions a node and pulls the image: minutes, not seconds.
+        # First start provisions a node and pulls the image; allow minutes.
         e2e_deployment.cli.poll_scoped_server_status(GPU_WORKSPACE, "Running", timeout_s=600)
         e2e_deployment.cli.wait_for_workspace_pod_exec_ready(GPU_WORKSPACE)
 

@@ -45,8 +45,7 @@ def test_golden_path_workspace_journey(
         # create_default_workspace ends on the detail page
         dex_oauth_web_app.wait_for_running()
 
-        # The bot user created the workspace, so it must appear in the default
-        # My Workspaces (ownership) view as well as in All.
+        # The bot user owns the workspace, so the ownership view must list it.
         dex_oauth_web_app.goto_workspace_list()
         my_card = dex_oauth_web_app.get_workspace_card(workspace_name)
         my_card.wait_for(state="visible", timeout=30000)
@@ -57,7 +56,6 @@ def test_golden_path_workspace_journey(
             f"Workspace '{workspace_name}' missing from the All view"
         )
 
-        # Open from the card → JupyterLab loads → the kernel executes a notebook.
         dex_oauth_web_app.goto_workspace_list()
         dex_oauth_web_app.open_workspace_from_card(workspace_name)
         dex_oauth_web_app.verify_jupyterlab_loaded()
@@ -73,7 +71,6 @@ def test_golden_path_workspace_journey(
         run_notebook_in_jupyterlab(dex_oauth_web_app.page, server_path, timeout_ms=120000)
         delete_notebook(e2e_deployment, server_path, name=workspace_name, scope=WORKSPACE_NAMESPACE)
 
-        # Persistence marker in the home volume, then stop from the detail page.
         e2e_deployment.cli.run_exec_with_retry(
             ["jupyter-deploy", "server", "exec", "--name", workspace_name, "--", "touch", PERSISTENCE_FLAG]
         )
@@ -88,7 +85,6 @@ def test_golden_path_workspace_journey(
             f"Stopped workspace '{workspace_name}' card should offer Start"
         )
 
-        # Start again; the home volume (and the file) must survive the cycle.
         dex_oauth_web_app.goto_workspace_detail(workspace_name)
         dex_oauth_web_app.start_workspace()
         e2e_deployment.cli.wait_for_workspace_pod_exec_ready(workspace_name)
@@ -99,7 +95,6 @@ def test_golden_path_workspace_journey(
             f"Home-volume file did not survive the stop/start cycle: {result.stdout}"
         )
 
-        # Delete through the UI; the workspace leaves the cluster and both views.
         dex_oauth_web_app.delete_workspace_from_list(workspace_name)
         ensure_workspace_no_longer_exists(workspace_name)
 

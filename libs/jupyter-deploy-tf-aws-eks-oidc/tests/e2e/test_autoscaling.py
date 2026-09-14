@@ -399,16 +399,11 @@ def test_karpenter_routing_nodepool_scales_up(e2e_deployment: EndToEndDeployment
 def test_keda_scales_routing_tier_under_connection_load(e2e_deployment: EndToEndDeployment) -> None:
     """Held connections drive every KEDA-scaled Deployment above its floor, then back.
 
-    Ballast pods hold 600 connections open on traefik's websecure entrypoint —
-    the shared metric behind all three routing ScaledObjects — so traefik,
-    authmiddleware, and web-app must each scale above their pre-load replica
-    count. Removing the ballast must return each Deployment exactly to its
-    pre-load count (KEDA pins the floor via minReplicaCount; on an idle e2e
-    deployment the pre-load count IS that floor).
-
-    Asserts spec.replicas (the HPA decision), not pod readiness: extra pods may
-    wait on a Karpenter routing node, which is not this test's contract. Node
-    consolidation after scale-down is not asserted either (jupyter-k8s-aws#81).
+    On an idle deployment the pre-load replica counts are the minReplicaCount
+    floors, so the scale-down check is exact equality. Asserts spec.replicas
+    (the HPA decision), not pod readiness: extra pods may wait on a Karpenter
+    routing node. Node consolidation after scale-down is not asserted
+    (jupyter-k8s-aws#81).
     """
     e2e_deployment.ensure_deployed()
 

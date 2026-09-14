@@ -86,8 +86,7 @@ jobs:
       - name: Restore EKS project
         run: just ci-restore-eks ${{ inputs.oauth-app-num }} sandbox-ci sandbox-e2e
 
-      # gpu-tests=1 sets JD_E2E_GPU_ENABLED (#357). GPU tests self-gate further:
-      # the mutating marker plus a runtime skip unless the deployment has the GPU pool.
+      # gpu-tests=1 sets JD_E2E_GPU_ENABLED so the GPU tests run in CI (#357).
       - name: Generate .env
         run: >-
           just env-setup-eks sandbox-e2e sandbox-ci ${{ inputs.oauth-app-num }}
