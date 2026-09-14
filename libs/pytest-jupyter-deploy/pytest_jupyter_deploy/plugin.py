@@ -40,6 +40,10 @@ def pytest_configure(config: Any) -> None:
     )
     config.addinivalue_line(
         "markers",
+        "gpu: mark test as requiring GPU capacity (paid quota); selected by the dedicated GPU CI job",
+    )
+    config.addinivalue_line(
+        "markers",
         "full_deployment: mark test as requiring full deployment from scratch",
     )
 

@@ -34,3 +34,20 @@ def run_kubectl(
     for group in as_groups or []:
         cmd += ["--as-group", group]
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def resource_absent(resource: str, name: str, namespace: str | None = None) -> bool:
+    """True once the named resource no longer exists.
+
+    Only a NotFound error counts as absent: treating any kubectl failure as
+    absence would let a lost cluster connection pass a deletion assertion.
+    """
+    args = ["get", resource, name]
+    if namespace:
+        args += ["-n", namespace]
+    result = run_kubectl(*args)
+    if result.returncode == 0:
+        return False
+    if "NotFound" in result.stderr:
+        return True
+    raise RuntimeError(f"kubectl get {resource} {name} failed: {result.stderr.strip()}")
