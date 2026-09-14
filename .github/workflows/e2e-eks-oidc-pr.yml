@@ -1,22 +1,17 @@
-# Per-PR e2e for the eks-oidc template against the restored shared deployment.
-# No fresh deploy happens here, so no Let's Encrypt certificate is consumed.
-#
-# Same-repo PRs only: pull_request runs from forks get no secrets and no OIDC
-# role, so the AWS steps cannot work; the guard skips them instead of failing.
-#
-# The mutating job runs only after the approve-mutating gate clears the
-# e2e-approval environment. Protection rules (required reviewers) on that
-# environment are configured by a repo admin; until they exist, GitHub
-# auto-creates the environment on first use with no rules and the gate passes
-# without review.
-#
-# Concurrency joins the e2e-eks-4 group shared with the manual and fresh
-# runs on OAuth app 4, so runs against the shared deployment serialize across
-# PRs and with manual dispatches.
+# Per-PR e2e for the eks-oidc template, run against the shared long-lived deployment.
+# pull_request_target is what grants the AWS role to fork PRs, and e2e executes the
+# PR's code, so nothing credentialed runs before the gate: PRs authored by org members
+# and collaborators pass it automatically, anyone else waits for approval on the
+# e2e-approval environment. Every job pins the PR head SHA from the triggering event,
+# so an approved run tests exactly the approved code. The mutating job waits for
+# e2e-approval for every author (it reconfigures the shared deployment). Runs
+# serialize in the e2e-eks-4 group with the manual and fresh runs. Until a repo admin
+# adds required reviewers to e2e-approval, GitHub auto-creates it with no rules and
+# the gate passes without review; e2e-auto is deliberately rule-free.
 name: E2E PR (eks-oidc template)
 
 on:
-  pull_request:
+  pull_request_target:
 
 permissions:
   id-token: write
@@ -27,13 +22,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  gate:
+    name: "E2E gate"
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    environment: ${{ contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) && 'e2e-auto' || 'e2e-approval' }}
+    steps:
+      - name: Gate cleared
+        run: echo "e2e gate cleared (author association ${{ github.event.pull_request.author_association }})"
+
   build-image:
     name: "Build E2E image"
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: gate
     uses: ./.github/workflows/e2e-build-image.yml
     secrets: inherit
     with:
       oauth-app-num: "4"
+      ref: ${{ github.event.pull_request.head.sha }}
 
   test-non-mutating:
     name: "Non-mutating tests"
@@ -43,6 +48,7 @@ jobs:
     with:
       oauth-app-num: "4"
       ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
+      ref: ${{ github.event.pull_request.head.sha }}
       timeout-minutes: 120
 
   approve-mutating:
@@ -63,6 +69,7 @@ jobs:
     with:
       oauth-app-num: "4"
       ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
+      ref: ${{ github.event.pull_request.head.sha }}
       marker: mutating
       mutate: true
       timeout-minutes: 210
