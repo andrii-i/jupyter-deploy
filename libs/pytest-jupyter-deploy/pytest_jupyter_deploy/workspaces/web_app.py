@@ -94,6 +94,11 @@ class WebAppNavigator:
         select = self.page.get_by_role("button", name=f"Select {template_display_name} template")
         select.wait_for(state="visible", timeout=30000)
         select.click()
+        # Selecting a card regenerates the suggested name; wait until the card reports
+        # selected before reading it, so the form submits the name it displays.
+        self.page.get_by_role("button", name=f"Select {template_display_name} template", pressed=True).wait_for(
+            state="visible", timeout=10000
+        )
         return self._fill_and_submit_create_form(private)
 
     def _fill_and_submit_create_form(self, private: bool) -> str:
