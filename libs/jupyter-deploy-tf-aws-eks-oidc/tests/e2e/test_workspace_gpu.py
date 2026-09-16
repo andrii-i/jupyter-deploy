@@ -33,6 +33,7 @@ NOTEBOOKS_DIR = Path(__file__).parent / "notebooks"
 
 GPU_POOL_FLAG = "enable_default_gpu_pool"
 GPU_WORKSPACE = "e2e-gpu-workspace"
+GPU_TEMPLATE_NAME = "jupyterlab-gpu"
 # Display name of the default GPU WorkspaceTemplate the flag synthesizes
 # (engine/platform_karpenter.tf), rendered as a card on the create page.
 GPU_TEMPLATE_DISPLAY_NAME = "JupyterLab GPU"
@@ -62,6 +63,25 @@ def _gpu_node_count() -> int:
     return len(get_node_names(GPU_ROLE_SELECTOR))
 
 
+def _gpu_template_workspaces() -> list[str]:
+    """Names of workspaces created from the GPU template (the ones that pin the GPU pool)."""
+    rows = _kubectl_stdout(
+        "get",
+        "workspaces",
+        "-n",
+        WORKSPACE_NAMESPACE,
+        "--no-headers",
+        "-o",
+        "custom-columns=NAME:.metadata.name,TEMPLATE:.spec.templateRef.name",
+    ).splitlines()
+    names = []
+    for row in rows:
+        cols = row.split()
+        if len(cols) == 2 and cols[1] == GPU_TEMPLATE_NAME:
+            names.append(cols[0])
+    return names
+
+
 def _apply_gpu_pool_flag(e2e_deployment: EndToEndDeployment, enabled: bool) -> None:
     """Record the flag in variables.yaml, then apply with jd config + jd up.
 
@@ -81,8 +101,11 @@ def gpu_pool_flag_guard(e2e_deployment: EndToEndDeployment) -> Generator[None, N
     yield
     if bool(e2e_deployment.read_override_value(GPU_POOL_FLAG)) != original:
         # A live GPU pod pins the pool; drop leftovers before the restoring apply.
+        # The UI case's workspace name is generated at create time, so select
+        # leftovers by the GPU templateRef rather than by name.
         with contextlib.suppress(Exception):
-            kubectl_delete_workspace(GPU_WORKSPACE)
+            for name in _gpu_template_workspaces():
+                kubectl_delete_workspace(name)
         _apply_gpu_pool_flag(e2e_deployment, original)
 
 
