@@ -189,13 +189,20 @@ class ProxyManager:
     def _latest_running(self) -> ProxyStatus | None:
         """Return the newest *confirmed* running proxy for the target, or None.
 
-        "Running" requires a confirmed process identity, not merely a live PID: an alive PID
-        whose creation time doesn't match the recorded one (or that we can't verify) is a
-        recycled/foreign process, not this project's proxy — so it does not count.
+        Two independent conditions, both required:
+
+        - ``status.running`` — the process is alive AND its published state is not terminal. A
+          proxy killed without running its shutdown path (SIGKILL, an OOM kill) leaves a
+          status.json still saying "running" behind a dead PID. Without this check that record
+          was reported as a running proxy: ``jd proxy status`` said running, ``jd proxy start``
+          refused with ProxyAlreadyRunningError, and ``jd proxy stop`` could not stop it (it
+          skips records whose process is gone) — a wedged project with no CLI way out.
+        - ``_is_confirmed_proxy`` — the live PID's creation time matches the recorded one, so a
+          recycled/foreign PID is never mistaken for this project's proxy.
         """
         for instance_dir in reversed(self._instance_dirs()):
             status = proxy_utils.read_instance_status(instance_dir)
-            if status is not None and self._is_confirmed_proxy(status):
+            if status is not None and status.running and self._is_confirmed_proxy(status):
                 return status
         return None
 
@@ -424,8 +431,14 @@ class ProxyManager:
         stopped: list[int] = []
         for instance_dir in self._instance_dirs():
             status = proxy_utils.read_instance_status(instance_dir)
-            if status is None or not status.alive:
-                continue  # already stopped / cleaned up
+            if status is None:
+                continue
+            if not status.alive:
+                # Already gone. If it left a status file behind (killed without running its
+                # shutdown path), remove it so later scans skip the directory cheaply and no
+                # stale record claims to be running. Not added to `stopped`: we did not stop it.
+                Path(status.log_dir, proxy_utils.PROXY_STATUS_FILE_NAME).unlink(missing_ok=True)
+                continue
             if not self._is_confirmed_proxy(status):
                 continue  # unconfirmed identity — never signal; surfaced via _unconfirmed_live()
             if cmd_utils.terminate_process(status.pid):

@@ -5,7 +5,9 @@
 // EKS uses (as minted by `jd proxy connect-info`), enforcing the known footguns:
 //
 //   - the embedded URL host must be the pinned regional STS endpoint (SSRF belt),
-//   - the action must be GetCallerIdentity and X-Amz-Expires must be bounded,
+//   - the action must be GetCallerIdentity, X-Amz-Expires must be bounded, and the token's signed
+//     lifetime (X-Amz-Date + X-Amz-Expires) must not have elapsed — STS itself does not enforce the
+//     declared expiry, so this is what keeps a captured token's replay window short,
 //   - the `x-k8s-aws-id` binding header must equal this deployment's id (cross-deployment
 //     replay defense) — and is replayed to STS so the signature covers it,
 //   - the principal returned by STS must be in this deployment's AWS account AND its IAM role
@@ -51,9 +53,14 @@ const (
 	tokenPrefix       = "k8s-aws-v1."
 	bindingHeader     = "x-k8s-aws-id"
 	maxTokenExpirySec = 900
-	cacheTTL          = 60 * time.Second
-	stsCallTimeout    = 5 * time.Second
-	stsRetryBackoff   = 200 * time.Millisecond
+	// Tolerance for clock skew between the signing client (the user's laptop) and this host, applied
+	// in both directions when enforcing the token's signed lifetime.
+	maxClockSkew = 60 * time.Second
+	// The SigV4 X-Amz-Date format (ISO8601 basic, always UTC).
+	amzDateLayout   = "20060102T150405Z"
+	cacheTTL        = 60 * time.Second
+	stsCallTimeout  = 5 * time.Second
+	stsRetryBackoff = 200 * time.Millisecond
 )
 
 // transientError marks an STS failure that is not the caller's fault — a network error, a 429,
@@ -63,6 +70,20 @@ type transientError struct{ err error }
 
 func (e *transientError) Error() string { return e.err.Error() }
 func (e *transientError) Unwrap() error { return e.err }
+
+// clockSkewError marks the one 401 the caller can fix without changing anything about their
+// credentials: the token's signed time window does not line up with this host's clock. X-Amz-Date is
+// stamped by the client and checked here, so a client whose clock has drifted past maxClockSkew has
+// EVERY token rejected, including freshly minted ones — refreshing cannot help. Suspended VMs are
+// the usual cause (WSL2 and Docker Desktop both fall behind by the length of a host sleep until they
+// re-sync). It is called out separately from other 401s so handleAuth can name the cause in the
+// response body: the generic "unauthorized" sends the user hunting through IAM and the allowlist,
+// while the real answer is `date` on their own machine. Safe to disclose — the offset is already
+// derivable from the HTTP Date response header.
+type clockSkewError struct{ err error }
+
+func (e *clockSkewError) Error() string { return e.err.Error() }
+func (e *clockSkewError) Unwrap() error { return e.err }
 
 type config struct {
 	deploymentID string
@@ -261,8 +282,35 @@ func (s *server) verify(ctx context.Context, bearer, binding string) (string, er
 	if q.Get("Action") != "GetCallerIdentity" {
 		return "", fmt.Errorf("token action is not GetCallerIdentity")
 	}
-	if expiry, err := strconv.Atoi(q.Get("X-Amz-Expires")); err != nil || expiry <= 0 || expiry > maxTokenExpirySec {
+	expiry, err := strconv.Atoi(q.Get("X-Amz-Expires"))
+	if err != nil || expiry <= 0 || expiry > maxTokenExpirySec {
 		return "", fmt.Errorf("token X-Amz-Expires is missing or out of bounds")
+	}
+
+	// Enforce the declared expiry ourselves, because STS does not. Measured against the live
+	// service: a presigned GetCallerIdentity URL declaring X-Amz-Expires=1 still authenticates a
+	// minute later — STS honours only its own SigV4 window (~15 min of clock skew on X-Amz-Date),
+	// not the lifetime the client asked for. The token is a bearer credential, so without this
+	// check anyone who captures one gets that whole window regardless of the 60s the client
+	// minted it for. X-Amz-Date and X-Amz-Expires are both inside the signature, so a captured
+	// token cannot be re-dated to extend itself; checking them locally is free (no STS call) and
+	// can only narrow what we accept. Combined with the bound above, the effective replay window
+	// becomes min(declared, 900s) + skew instead of STS's ~15 min.
+	signedAt, err := time.Parse(amzDateLayout, q.Get("X-Amz-Date"))
+	if err != nil {
+		return "", fmt.Errorf("token X-Amz-Date is missing or malformed")
+	}
+	// The client is the user's laptop, whose clock we do not control, so allow skew in both
+	// directions: a token signed slightly in our future is not yet suspicious, and a legitimate
+	// one must not be rejected early just because our clock runs ahead.
+	age := time.Since(signedAt)
+	if age > time.Duration(expiry)*time.Second+maxClockSkew {
+		return "", &clockSkewError{fmt.Errorf(
+			"token is expired (signed %s ago, X-Amz-Expires=%ds)", age.Truncate(time.Second), expiry)}
+	}
+	if age < -maxClockSkew {
+		return "", &clockSkewError{fmt.Errorf(
+			"token X-Amz-Date is too far in the future (%s)", (-age).Truncate(time.Second))}
 	}
 
 	// Replay the client's presigned request verbatim, but only ever to the pinned STS host we
@@ -373,6 +421,15 @@ func (s *server) handleAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("auth 401 (%s): %v", fwd, err)
+		if skew, ok := errors.AsType[*clockSkewError](err); ok {
+			// Name the cause in the body, not just the log: this is the only 401 whose fix is on
+			// the caller's machine rather than in IAM or the allowlist.
+			http.Error(w, fmt.Sprintf(
+				"unauthorized: %v. The token is outside its signed time window; this host allows %s of "+
+					"clock skew. Check that this machine's clock is in sync (e.g. a suspended VM).",
+				skew, maxClockSkew), http.StatusUnauthorized)
+			return
+		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

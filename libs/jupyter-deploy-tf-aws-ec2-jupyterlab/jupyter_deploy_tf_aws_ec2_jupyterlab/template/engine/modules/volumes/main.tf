@@ -80,18 +80,6 @@ data "aws_efs_file_system" "referenced_file_systems" {
   file_system_id = each.value
 }
 
-# Get default subnet for EFS mount target
-data "aws_subnets" "default" {
-  filter {
-    name   = "availability-zone"
-    values = [var.availability_zone]
-  }
-}
-
-data "aws_subnet" "default" {
-  id = data.aws_subnets.default.ids[0]
-}
-
 # STEP 3: Generate the volumes mappings
 locals {
   # combine created and referenced EBS volumes into a single map
@@ -156,6 +144,6 @@ resource "aws_efs_mount_target" "additional_efs_targets" {
     }
   }
   file_system_id  = each.value.file_system_id
-  subnet_id       = data.aws_subnet.default.id
+  subnet_id       = var.subnet_id
   security_groups = length(var.additional_efs_mounts) > 0 && var.efs_security_group_id != null ? [var.efs_security_group_id] : []
 }

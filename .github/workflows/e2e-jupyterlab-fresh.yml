@@ -100,7 +100,7 @@ jobs:
     name: "Deploy + verify"
     needs: [build-image]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     environment: e2e
     permissions:
       id-token: write
@@ -143,18 +143,20 @@ jobs:
       - name: Seed .env
         run: just env-setup-jupyterlab
 
-      # The deploy recipe emits `deployment_id` to $GITHUB_OUTPUT (even if `jd up` fails,
-      # then re-raises the failure), so the destroy job can always scope its teardown.
-      - name: Deploy (jd init / config / up)
+      # Deploys THROUGH pytest in fresh-deploy mode, so `jd up` and the
+      # test_immediately_available_after_deployment assertion happen in the SAME pytest
+      # session — seconds apart, with no intervening `jd config` or container restart. That
+      # is the point of folding the old separate "Verify deployment" step into the deploy: a
+      # second step ran against a now-existing project, which re-ran a full terraform plan and
+      # restarted the container first, inserting minutes of slack that masked exactly the
+      # propagation delay a user would feel. (It also needed --with-full-deployment forced on,
+      # which was the smell.)
+      #
+      # The recipe emits `deployment_id` to $GITHUB_OUTPUT even when the deploy fails, then
+      # re-raises the failure, so the destroy job can always scope its teardown.
+      - name: Deploy + verify (jd init / config / up, in-session)
         id: deploy
         run: just ci-e2e-jupyterlab-deploy sandbox-e2e
-
-      # Verify the app responds the moment `jd up` finishes (the full_deployment tests).
-      - name: Verify deployment
-        if: steps.deploy.outcome == 'success'
-        run: >-
-          just test-e2e-jupyterlab sandbox-e2e "test_deployment"
-          "full-deploy=true,skip-sync=true"
 
       - name: Upload test artifacts
         if: always()
@@ -164,9 +166,16 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
 
-  # Job 2 — restore the deployment from the store and run the remaining tests.
+      - name: Upload test results to S3
+        if: failure()
+        continue-on-error: true
+        run: just ci-upload-test-results ${{ inputs.ecr-slot }}
+
+  # Job 2 — restore the deployment from the store and run the non-mutating tests. These assume
+  # the as-deployed defaults (t3.medium + uv, no external volumes), which is why they run before
+  # the mutating pass and not after.
   test:
-    name: "Non-deployment tests"
+    name: "Non-mutating tests"
     needs: [build-image, deploy]
     if: needs.deploy.result == 'success'
     uses: ./.github/workflows/e2e-jupyterlab-job.yml
@@ -176,14 +185,41 @@ jobs:
       ecr-slot: ${{ inputs.ecr-slot }}
       deployment-id: ${{ needs.deploy.outputs.deployment-id }}
       test-filter: ${{ inputs.test-filter }}
+      job-name: "Non-mutating tests"
       ref: ${{ inputs.ref }}
-      timeout-minutes: 45
+      timeout-minutes: 120
 
-  # Job 3 — teardown. Runs even if deploy/test failed (best-effort), as long as a
-  # deployment id was emitted, so a fresh run never inherits leaked infrastructure.
+  # Job 3 — the mutating pass: ONE job, two in-place `jd up` cycles on the SAME deployment
+  # (uv/CPU -> pixi/GPU+volumes -> uv/CPU). One job rather than the base template's five,
+  # because what is under test is the transition, not the end state — see
+  # tests/e2e/test_mutating_gpu_pixi.py. It runs after the non-mutating pass because the two
+  # applies leave the deployment on a different configuration than it was deployed with.
+  #
+  # Appended to the serial chain deliberately: a second deployment per configuration would be
+  # cheaper in wall clock but would never exercise a swap.
+  test-mutating:
+    name: "Mutating tests"
+    needs: [build-image, deploy, test]
+    if: needs.test.result == 'success'
+    uses: ./.github/workflows/e2e-jupyterlab-job.yml
+    secrets: inherit
+    with:
+      ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
+      ecr-slot: ${{ inputs.ecr-slot }}
+      deployment-id: ${{ needs.deploy.outputs.deployment-id }}
+      test-filter: "test_mutating"
+      mutate: true
+      job-name: "Mutating tests"
+      ref: ${{ inputs.ref }}
+      timeout-minutes: 120
+
+  # Job 4 — teardown. Runs even if any earlier job failed (best-effort), as long as a
+  # deployment id was emitted, so a fresh run never inherits leaked infrastructure. This is
+  # load-bearing for the mutating pass in particular: a GPU capacity failure mid-apply leaves
+  # the deployment on a half-applied config, with a GPU instance billing until it is reaped.
   destroy:
     name: "Teardown deployment"
-    needs: [build-image, deploy, test]
+    needs: [build-image, deploy, test, test-mutating]
     if: always() && inputs.destroy-after && needs.deploy.outputs.deployment-id != ''
     runs-on: ubuntu-latest
     timeout-minutes: 30

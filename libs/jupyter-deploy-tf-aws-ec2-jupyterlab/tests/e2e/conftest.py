@@ -6,14 +6,22 @@ The pytest-jupyter-deploy plugin provides the fixtures these tests use automatic
 - client_proxy_app: JupyterLab reached through the local client proxy (no OAuth)
 
 This template's configuration tests need AWS credentials but NO test env vars (no domain,
-OAuth, or email) — that is the point of the template.
+OAuth, or email) — that is the point of the template. The only env vars any test here needs
+are the instance types / retention value the mutating pass switches between.
 """
 
+import contextlib
+import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pytest_jupyter_deploy.auth_sidecars.aws_auth_sidecar import caller_principal as parse_caller_principal
+from pytest_jupyter_deploy.cli import JDCli
+from pytest_jupyter_deploy.deployment import EndToEndDeployment
+from pytest_jupyter_deploy.undeployed_project import undeployed_project
 
 
 def pytest_collection_modifyitems(items: list) -> None:
@@ -70,3 +78,171 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo) -> Any:
         print(f"\n📄 Saved page artifacts to: {test_dir}/")
     except Exception as e:
         print(f"\n⚠️  Could not save page artifacts: {e}")
+
+
+# --------------------------------------------------------------------------- mutating-pass config
+
+
+@pytest.fixture(scope="session")
+def cpu_instance_type() -> str:
+    """Return the CPU instance type the second in-place apply switches back to.
+
+    Raises:
+        ValueError: If JD_E2E_CPU_INSTANCE is not set.
+    """
+    cpu_instance = os.getenv("JD_E2E_CPU_INSTANCE")
+    if not cpu_instance:
+        raise ValueError("JD_E2E_CPU_INSTANCE environment variable must be set")
+    return cpu_instance
+
+
+@pytest.fixture(scope="session")
+def gpu_instance_type() -> str:
+    """Return the GPU instance type the first in-place apply switches to.
+
+    Raises:
+        ValueError: If JD_E2E_GPU_INSTANCE is not set.
+    """
+    gpu_instance = os.getenv("JD_E2E_GPU_INSTANCE")
+    if not gpu_instance:
+        raise ValueError("JD_E2E_GPU_INSTANCE environment variable must be set")
+    return gpu_instance
+
+
+@pytest.fixture(scope="session")
+def larger_log_retention_days() -> int:
+    """Return a log-retention value distinct from the default, for the config-change assertion.
+
+    Raises:
+        ValueError: If JD_E2E_LARGER_LOG_RETENTION_DAYS is not set.
+    """
+    retention_days = os.getenv("JD_E2E_LARGER_LOG_RETENTION_DAYS")
+    if not retention_days:
+        raise ValueError("JD_E2E_LARGER_LOG_RETENTION_DAYS environment variable must be set")
+    return int(retention_days)
+
+
+# --------------------------------------------------------------------------- deployment identity
+
+
+@pytest.fixture(scope="session")
+def caller_principal() -> tuple[str, str]:
+    """Return the calling AWS identity as ``(kind, name)`` — "role"/"user" plus the IAM name.
+
+    Session-scoped: the identity the test process runs as cannot change mid-run. Every auth
+    test dispatches on this rather than hard-coding `jd teams` or `jd users`, because the
+    sidecar matches an assumed-role caller against the role allowlist and an IAM-user caller
+    against the user allowlist.
+    """
+    return parse_caller_principal()
+
+
+@pytest.fixture(scope="session")
+def deployment_id(e2e_deployment: EndToEndDeployment) -> str:
+    """Return the deployment id, which is also the auth-sidecar binding id (``x-k8s-aws-id``)."""
+    e2e_deployment.ensure_deployed()
+    return e2e_deployment.cli.get_str_output("deployment_id")
+
+
+@pytest.fixture(scope="session")
+def aws_region(e2e_deployment: EndToEndDeployment) -> str:
+    """Return the region the deployment lives in (read from the template output, not the env)."""
+    e2e_deployment.ensure_deployed()
+    return e2e_deployment.cli.get_str_output("region")
+
+
+@pytest.fixture
+def connect_bundle(e2e_deployment: EndToEndDeployment) -> dict:
+    """Return a fresh ``jd proxy connect-info`` bundle (host, port, ca_cert, headers, expires_at).
+
+    Function-scoped on purpose: the token inside expires in ~60s, and ``host`` is the
+    instance's public IP, which changes across a host stop/start. A session-scoped bundle
+    would go stale mid-run in both dimensions.
+    """
+    e2e_deployment.ensure_host_running()
+    return e2e_deployment.cli.get_connect_bundle()
+
+
+# --------------------------------------------------------------------------- shared proxy
+
+
+@pytest.fixture
+def running_proxy(e2e_deployment: EndToEndDeployment) -> Iterator[str]:
+    """Start a detached proxy and yield its loopback origin, stopping it on teardown.
+
+    **Function-scoped, deliberately.** An earlier draft made this module-scoped to share one
+    `jd proxy start` (a ``connect-info`` round-trip plus a bind, ~5s) across the read-only proxy
+    tests. That is unsound: the proxy is a per-project singleton, and the lifecycle tests in the
+    same file legitimately call `jd proxy stop`, which terminates *every* live proxy for the
+    project — including one a module-scoped fixture owns. The fixture would then keep handing out
+    a cached URL to a dead port, and every later test would fail with a connection refused whose
+    cause is three tests upstream. ~5s per test is the correct price for a singleton resource.
+    """
+    e2e_deployment.ensure_server_running()
+    url = e2e_deployment.cli.start_proxy(replace=True)
+    try:
+        yield url
+    finally:
+        e2e_deployment.cli.stop_proxy_if_running()
+
+
+# --------------------------------------------------------------------------- undeployed projects
+
+
+@pytest.fixture(scope="module")
+def initialized_project(e2e_deployment: EndToEndDeployment) -> Iterator[tuple[Path, JDCli]]:
+    """Yield one ``jd init``-ed (not configured) throwaway project shared by the module.
+
+    Module-scoped so read-only assertions about generated files share a single init. Tests
+    that mutate or corrupt the project must open their own ``undeployed_project()`` instead.
+    """
+    with undeployed_project(e2e_deployment.suite_config) as project:
+        yield project
+
+
+@pytest.fixture(scope="module")
+def configured_project(e2e_deployment: EndToEndDeployment) -> Iterator[tuple[Path, JDCli]]:
+    """Yield one ``jd init`` + ``jd config``-ed throwaway project shared by the module.
+
+    A `jd config` is a ``terraform init`` + ``plan``, the most expensive thing in this suite,
+    so the tests that only read its results share one.
+    """
+    with undeployed_project(e2e_deployment.suite_config) as (project_path, cli):
+        e2e_deployment.configure_project(cli=cli)
+        yield project_path, cli
+
+
+# --------------------------------------------------------------------------- allowlist safety net
+
+
+@pytest.fixture(scope="module")
+def restore_allowlist(e2e_deployment: EndToEndDeployment) -> Iterator[None]:
+    """Snapshot both IAM allowlists and restore them on teardown.
+
+    Mandatory, not optional, for any module that edits the allowlist: the revocation tests
+    deliberately lock the caller out of the app, and a failure between revoke and restore
+    would 403 every later test in the file. Recovery runs over SSM, which the `jd users` /
+    `jd teams` commands use and which is entirely independent of the proxy/auth path — so it
+    works even while the caller has no access to JupyterLab itself.
+    """
+    e2e_deployment.ensure_deployed()
+    teams = e2e_deployment.get_allowlisted_teams()
+    users = e2e_deployment.get_allowlisted_users()
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            _restore_group(e2e_deployment, "teams", teams)
+        with contextlib.suppress(Exception):
+            _restore_group(e2e_deployment, "users", users)
+
+
+def _restore_group(e2e_deployment: EndToEndDeployment, group: str, names: list[str]) -> None:
+    """Set ``group``'s allowlist back to ``names`` (``jd <group> remove`` clears it if empty)."""
+    current = e2e_deployment.get_allowlisted_teams() if group == "teams" else e2e_deployment.get_allowlisted_users()
+    if sorted(n.lower() for n in current) == sorted(n.lower() for n in names):
+        return
+    if names:
+        e2e_deployment.cli.run_command(["jupyter-deploy", group, "set", *names])
+    elif current:
+        e2e_deployment.cli.run_command(["jupyter-deploy", group, "remove", *current])

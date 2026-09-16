@@ -10,6 +10,8 @@ from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
+import psutil
+
 from jupyter_deploy.cmd_utils import (
     check_executable_installation,
     get_pid_create_time,
@@ -704,9 +706,48 @@ class TestIsPidAlive(unittest.TestCase):
         mock_kill.side_effect = PermissionError()
         self.assertTrue(is_pid_alive(12345))
 
+    @patch("jupyter_deploy.cmd_utils.psutil.Process")
     @patch("jupyter_deploy.cmd_utils.os.kill")
-    def test_no_error_means_alive(self, mock_kill: Mock) -> None:
+    def test_no_error_means_alive(self, mock_kill: Mock, mock_process: Mock) -> None:
+        # Signal 0 succeeding is necessary but not sufficient: the status read below is what
+        # distinguishes a running process from a zombie, so it has to be stubbed here too.
         mock_kill.return_value = None
+        mock_process.return_value.status.return_value = psutil.STATUS_SLEEPING
+        self.assertTrue(is_pid_alive(12345))
+
+    @patch("jupyter_deploy.cmd_utils.psutil.Process")
+    @patch("jupyter_deploy.cmd_utils.os.kill")
+    def test_zombie_is_not_alive(self, mock_kill: Mock, mock_process: Mock) -> None:
+        # An exited-but-unreaped process still holds its PID, so signal 0 succeeds — but it is
+        # dead and no signal will change that. In a container whose PID 1 does not reap (a
+        # `sleep infinity`), an orphaned detached proxy stays a zombie forever; counting it as
+        # alive made `jd proxy stop` burn its SIGTERM timeout and then report failure for a
+        # proxy it had just stopped.
+        mock_kill.return_value = None
+        mock_process.return_value.status.return_value = psutil.STATUS_ZOMBIE
+        self.assertFalse(is_pid_alive(12345))
+
+    @patch("jupyter_deploy.cmd_utils.psutil.Process")
+    @patch("jupyter_deploy.cmd_utils.os.kill")
+    def test_running_status_is_alive(self, mock_kill: Mock, mock_process: Mock) -> None:
+        mock_kill.return_value = None
+        mock_process.return_value.status.return_value = psutil.STATUS_RUNNING
+        self.assertTrue(is_pid_alive(12345))
+
+    @patch("jupyter_deploy.cmd_utils.psutil.Process")
+    @patch("jupyter_deploy.cmd_utils.os.kill")
+    def test_no_such_process_on_status_means_not_alive(self, mock_kill: Mock, mock_process: Mock) -> None:
+        # Raced: the PID existed at the signal-0 probe and was gone by the status read.
+        mock_kill.return_value = None
+        mock_process.side_effect = psutil.NoSuchProcess(12345)
+        self.assertFalse(is_pid_alive(12345))
+
+    @patch("jupyter_deploy.cmd_utils.psutil.Process")
+    @patch("jupyter_deploy.cmd_utils.os.kill")
+    def test_unreadable_status_falls_back_to_signal_probe(self, mock_kill: Mock, mock_process: Mock) -> None:
+        # No /proc, unsupported platform, or denied: trust what signal 0 already established.
+        mock_kill.return_value = None
+        mock_process.side_effect = RuntimeError("no /proc")
         self.assertTrue(is_pid_alive(12345))
 
 

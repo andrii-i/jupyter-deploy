@@ -9,6 +9,7 @@ overrides:
   # additional_ebs_mounts: []
   # additional_efs_mounts: []
   # ami_id: null
+  # availability_zone: any
   # custom_tags: {}
   # iam_role_names_allowlist: []
   # iam_role_prefix: Jupyter-deploy-jupyterlab

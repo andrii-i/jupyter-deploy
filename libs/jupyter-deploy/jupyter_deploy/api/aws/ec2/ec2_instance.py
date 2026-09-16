@@ -16,6 +16,7 @@ from mypy_boto3_ec2.type_defs import (
 )
 
 from jupyter_deploy.engine.supervised_execution import DisplayManager
+from jupyter_deploy.exceptions import IncompatibleHostStateError, ResourceNotFoundError
 
 
 class Ec2InstanceState(str, Enum):
@@ -242,21 +243,30 @@ def describe_instance_public_ip(ec2_client: EC2Client, instance_id: str) -> str:
     Resolved live per call for EC2 instance deployed without an EIP. Callers pin
     on the cert/key, not the address, so the churn is expected.
 
+    A stopped instance has no public IP, which is the single most common reason
+    ``jd proxy connect-info`` / ``jd open`` cannot resolve an endpoint — so it raises a typed,
+    hinted error the CLI renders as an actionable message rather than a bare ``ValueError``
+    the error decorator does not recognise (which surfaces as a full traceback).
+
     Raises:
-        ValueError: if the instance is not found or has no public IP (typically stopped).
+        ResourceNotFoundError: if the instance does not exist.
+        IncompatibleHostStateError: if it exists but has no public IP (typically stopped).
     """
     request: DescribeInstancesRequestTypeDef = {"InstanceIds": [instance_id]}
     response = ec2_client.describe_instances(**request)
 
     reservations = response.get("Reservations", [])
     if not reservations:
-        raise ValueError(f"Instance not found: {instance_id}")
+        raise ResourceNotFoundError("EC2 instance", instance_id, "describe_instances returned no reservations")
 
     instances = reservations[0].get("Instances", [])
     if not instances:
-        raise ValueError(f"Instance not found in reservation: {instance_id}")
+        raise ResourceNotFoundError("EC2 instance", instance_id, "describe_instances returned an empty reservation")
 
     public_ip = instances[0].get("PublicIpAddress")
     if not public_ip:
-        raise ValueError(f"Instance '{instance_id}' has no public IP — it may be stopped or is in a private subnet.")
+        raise IncompatibleHostStateError(
+            f"Instance '{instance_id}' has no public IP — it may be stopped or is in a private subnet.",
+            hint="If the host is stopped, start it with: jd host start",
+        )
     return public_ip

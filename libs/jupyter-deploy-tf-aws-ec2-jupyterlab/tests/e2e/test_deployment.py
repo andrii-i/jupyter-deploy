@@ -21,8 +21,12 @@ def test_immediately_available_after_deployment(
     """After `jd up`, JupyterLab must be reachable through the client proxy right away.
 
     There is no browser sign-in — the client proxy injects the caller's STS-identity token.
-    The ``client_proxy_app`` fixture already ensured the server is running and started the
-    proxy; this verifies ``/lab`` responds without a warm-up wait (the point of the test).
+
+    The ``client_proxy_app`` fixture deliberately calls ONLY ``ensure_deployed()`` and starts
+    the proxy — it does not call ``ensure_server_running()``, which would run `jd server restart`
+    whenever the server did not yet report available and so would silently heal the exact
+    failure this test exists to detect. What is asserted is that ``/lab`` responds with no
+    warm-up and no intervention, the instant `jd up` returns.
     """
     client_proxy_app.verify_jupyterlab_accessible(max_retries=20)
 

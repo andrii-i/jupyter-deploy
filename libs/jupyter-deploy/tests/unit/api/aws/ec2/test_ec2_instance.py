@@ -16,6 +16,7 @@ from jupyter_deploy.api.aws.ec2.ec2_instance import (
     stop_instance,
 )
 from jupyter_deploy.engine.supervised_execution import NullDisplay
+from jupyter_deploy.exceptions import IncompatibleHostStateError, ResourceNotFoundError
 
 
 class TestEc2InstanceStateEnum(unittest.TestCase):
@@ -480,29 +481,34 @@ class TestDescribeInstancePublicIp(unittest.TestCase):
         self.assertEqual(result, "203.0.113.7")
         mock_client.describe_instances.assert_called_once_with(InstanceIds=["i-abc"])
 
-    def test_raises_when_no_reservations(self) -> None:
+    def test_raises_resource_not_found_when_no_reservations(self) -> None:
         mock_client = Mock()
         mock_client.describe_instances.return_value = {"Reservations": []}
 
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(ResourceNotFoundError) as ctx:
             describe_instance_public_ip(mock_client, "i-missing")
         self.assertIn("i-missing", str(ctx.exception))
 
-    def test_raises_when_no_instances(self) -> None:
+    def test_raises_resource_not_found_when_no_instances(self) -> None:
         mock_client = Mock()
         mock_client.describe_instances.return_value = {"Reservations": [{"Instances": []}]}
 
-        with self.assertRaises(ValueError):
+        with self.assertRaises(ResourceNotFoundError):
             describe_instance_public_ip(mock_client, "i-abc")
 
-    def test_raises_when_no_public_ip(self) -> None:
-        # Stopped or private-subnet instance: PublicIpAddress may be absent/empty.
+    def test_raises_incompatible_host_state_when_no_public_ip(self) -> None:
+        # Stopped or private-subnet instance: PublicIpAddress may be absent/empty. This must be a
+        # typed, hinted error: `handle_cli_errors` renders IncompatibleHostStateError as an
+        # actionable message, where a bare ValueError falls through to a full traceback — which is
+        # what `jd proxy connect-info` and `jd open` used to print for a merely stopped host.
         mock_client = Mock()
         mock_client.describe_instances.return_value = {"Reservations": [{"Instances": [{"InstanceId": "i-abc"}]}]}
 
-        with self.assertRaises(ValueError) as ctx:
+        with self.assertRaises(IncompatibleHostStateError) as ctx:
             describe_instance_public_ip(mock_client, "i-abc")
         self.assertIn("no public IP", str(ctx.exception))
+        self.assertIsNotNone(ctx.exception.hint)
+        self.assertIn("jd host start", str(ctx.exception.hint))
 
     def test_raises_when_describe_instances_raises(self) -> None:
         mock_client = Mock()

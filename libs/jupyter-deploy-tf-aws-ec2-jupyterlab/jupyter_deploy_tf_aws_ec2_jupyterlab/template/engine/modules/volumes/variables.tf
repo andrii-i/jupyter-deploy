@@ -33,6 +33,17 @@ variable "additional_efs_mounts" {
   type        = list(map(string))
 }
 
+variable "subnet_id" {
+  description = <<-EOT
+    Subnet to place the EFS mount targets in -- the SAME subnet the instance uses.
+
+    Passed in rather than looked up here. A lookup by availability zone alone can match a subnet in
+    a different VPC than the security group, and EFS rejects that with
+    "SecurityGroupNotFound: You have specified two resources that belong to different networks".
+  EOT
+  type        = string
+}
+
 variable "availability_zone" {
   description = "Availability zone of the EC2 instance where to create the EBS volumes."
   type        = string

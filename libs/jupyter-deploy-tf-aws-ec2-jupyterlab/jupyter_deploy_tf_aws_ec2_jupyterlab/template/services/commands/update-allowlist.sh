@@ -24,6 +24,10 @@ ENTITY_TYPE=$1
 ACTION=$2
 VALUES=$3
 
+# Set to 1 if the sidecar never came back healthy. Checked only after the terraform write-back has
+# been echoed, so a failed recreate is reported without costing the write-back.
+RECREATE_FAILED=0
+
 log_message() {
   echo "[$(date +"%Y-%m-%d %H:%M:%S")] $*" >> "$LOG_FILE"
 }
@@ -131,13 +135,30 @@ if [ "$CURRENT" != "$FINAL" ]; then
   log_message "Recreating auth-sidecar to apply changes..."
   cd /opt/docker
   # Recreate only the sidecar so it picks up the new env from .env; JupyterLab keeps running.
-  # A --wait hiccup (e.g. the health probe racing a just-finished full-stack restart) must NOT
-  # fail the command: the allowlist file and .env are already updated, so the change is durable
-  # and we still need to emit the new list below for the terraform write-back. Log and continue.
+  # --wait gates on the container's healthcheck, so this call does not return until the sidecar is
+  # actually serving the new allowlist. That makes the CLI authoritative: `jd teams add` returning
+  # 0 means the decision is live, so callers need no settle-poll of their own.
   if OUTPUT=$(docker compose up -d auth-sidecar --wait --wait-timeout 60 2>&1); then
     log_message "auth-sidecar recreate complete: $OUTPUT"
   else
-    log_message "auth-sidecar recreate returned non-zero (change is applied to .env regardless): $OUTPUT"
+    # Roll the host edit back, because this command is about to fail and a failed command gets NO
+    # terraform write-back: aws_ssm_runner raises on SSM Status=Failed before returning results, and
+    # the handlers only call update_variables() on success. Leaving the edit in place would put the
+    # host ahead of terraform, and the direction that costs is `remove` — the host would have
+    # revoked the entry while the terraform variable still lists it, so the next `jd up` re-seeds
+    # /etc/AUTH_ALLOWLIST and silently restores the access the operator just revoked.
+    # Rolling back keeps both sides at the pre-command state, so a non-zero exit means exactly
+    # "nothing changed, retry once the sidecar is healthy".
+    log_message "ERROR: auth-sidecar did not become healthy within 60s: $OUTPUT"
+    log_message "Rolling back [$ENTITY_TYPE] to '$CURRENT' so the host still matches terraform."
+    update_section "$ENTITY_TYPE" "$CURRENT"
+    set_env_var "ROLE_NAME_ALLOWLIST" "$(get_section_content roles)"
+    set_env_var "USER_NAME_ALLOWLIST" "$(get_section_content users)"
+    # Best-effort, deliberately NOT gated on health: the running container still holds the
+    # abandoned edit in its environment, so recreate it against the rolled-back .env. If it stays
+    # unhealthy the files are still consistent, and its restart policy converges it later.
+    docker compose up -d auth-sidecar --force-recreate >/dev/null 2>&1 || true
+    RECREATE_FAILED=1
   fi
 else
   log_message "No change to [$ENTITY_TYPE]; auth-sidecar left running."
@@ -146,3 +167,8 @@ fi
 # Echo the modified section's new content. The manifest runner writes this back into the matching
 # terraform variable (iam_role_names_allowlist / iam_user_names_allowlist), keeping state in sync.
 echo "$(get_section_content "$ENTITY_TYPE")"
+
+# Non-zero when the sidecar never became healthy. The write-back above is emitted either way, but
+# the CLI only consumes it on success, so the failure path rolled the host edit back rather than
+# relying on it: whichever path ran, host and terraform agree.
+exit "$RECREATE_FAILED"

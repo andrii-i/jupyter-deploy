@@ -31,6 +31,16 @@ on:
         required: false
         type: string
         default: ""
+      mutate:
+        description: "Include mutating tests (they run `jd config` + `jd up` against the deployment)"
+        required: false
+        type: boolean
+        default: false
+      job-name:
+        description: "Display name for the job (distinguishes the non-mutating and mutating passes)"
+        required: false
+        type: string
+        default: "Run E2E tests"
       timeout-minutes:
         description: "Job timeout in minutes"
         required: false
@@ -44,7 +54,7 @@ on:
 
 jobs:
   test:
-    name: Run E2E tests
+    name: ${{ inputs.job-name }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout-minutes }}
     environment: e2e
@@ -92,13 +102,24 @@ jobs:
         run: just env-setup-jupyterlab
 
       # Existing project + no --with-full-deployment ⇒ full_deployment tests auto-skip.
+      # mutate=true additionally un-skips the @pytest.mark.mutating tests, which run
+      # `jd config` + `jd up` in place against this same restored deployment.
       - name: Run E2E tests
-        run: just test-e2e-jupyterlab ${{ inputs.project-dir }} "${{ inputs.test-filter }}" "skip-sync=true"
+        run: >-
+          just test-e2e-jupyterlab ${{ inputs.project-dir }} "${{ inputs.test-filter }}"
+          "skip-sync=true${{ inputs.mutate && ',mutate=true' || '' }}"
 
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results-jupyterlab
+          # Distinct per pass: the non-mutating and mutating jobs both upload, and same-named
+          # artifacts collide within a run.
+          name: test-results-jupyterlab-${{ inputs.mutate && 'mutating' || 'non-mutating' }}
           path: test-results/
           if-no-files-found: ignore
+
+      - name: Upload test results to S3
+        if: failure()
+        continue-on-error: true
+        run: just ci-upload-test-results ${{ inputs.ecr-slot }}

@@ -1,7 +1,9 @@
 """CLI wrapper for jupyter-deploy commands."""
 
+import contextlib
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -15,6 +17,16 @@ from jupyter_deploy import constants as jd_constants
 from jupyter_deploy.handlers.base_project_handler import retrieve_project_manifest
 
 logger = logging.getLogger(__name__)
+
+# `jd open` launches a browser via Python's `webbrowser`, which exits non-zero
+# (OpenWebBrowserError) when no browser can be launched. Tests that only care about the
+# resolved URL / proxy lifecycle pass this as $BROWSER so the launch is a no-op success:
+# `webbrowser` builds a GenericBrowser from any $BROWSER entry containing "%s" and reports
+# success on a zero exit code.
+NOOP_BROWSER = "echo %s"
+
+# CSI escape sequences rich emits when stdout is a tty.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
 class JDCliError(RuntimeError):
@@ -38,6 +50,7 @@ class JDCli:
         cmd: list[str],
         timeout_seconds: int | None = None,
         capture_output: bool = True,
+        env: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run a command from the project directory.
 
@@ -46,6 +59,8 @@ class JDCli:
             cwd: Working directory for command
             timeout_seconds: Command timeout in seconds
             capture_output: Whether to capture stdout/stderr
+            env: Extra environment variables, merged over the current environment (not
+                replacing it — the child still needs PATH, AWS_*, HOME, …)
 
         Returns:
             CompletedProcess instance
@@ -62,6 +77,7 @@ class JDCli:
                     timeout=timeout_seconds,
                     capture_output=capture_output,
                     text=True,
+                    env={**os.environ, **env} if env else None,
                 )
                 return result
             except subprocess.CalledProcessError as e:
@@ -329,7 +345,7 @@ class JDCli:
         self._jupyterlab_url = result.stdout.strip()
         return self._jupyterlab_url
 
-    def start_proxy(self, path: str = "") -> str:
+    def start_proxy(self, path: str = "", replace: bool = False) -> str:
         """Start the local client proxy for this project and return its loopback URL.
 
         Runs `jd proxy start` (always detached) then reads the bound port back from
@@ -340,6 +356,9 @@ class JDCli:
 
         Args:
             path: Optional path appended to the loopback URL (e.g. "/lab").
+            replace: Stop any proxy already running for the project first, so the start
+                cannot fail with ProxyAlreadyRunningError. Use for idempotent setup; leave
+                False when the refusal itself is what a test asserts.
 
         Returns:
             The loopback URL the proxy is listening on (e.g. "http://127.0.0.1:54321/lab").
@@ -347,8 +366,25 @@ class JDCli:
         Raises:
             JDCliError: If the proxy fails to start or its port cannot be read.
         """
+        if replace:
+            self.stop_proxy_if_running()
         self.run_command(["jupyter-deploy", "proxy", "start"])
         return self.get_proxy_url(path)
+
+    def get_proxy_details(self) -> dict:
+        """Return the parsed `jd proxy show --json` payload for the running proxy.
+
+        Raises:
+            JDCliError: If no proxy is running or the output is not a single JSON document.
+        """
+        result = self.run_command(["jupyter-deploy", "proxy", "show", "--json"])
+        try:
+            payload = json.loads(result.stdout.strip())
+        except json.JSONDecodeError as e:
+            raise JDCliError(f"`jd proxy show --json` did not emit clean JSON: {result.stdout!r}") from e
+        if not isinstance(payload, dict):
+            raise JDCliError(f"Expected a JSON object from `jd proxy show --json`, got: {result.stdout!r}")
+        return payload
 
     def get_proxy_port(self) -> int:
         """Return the loopback port the running proxy is bound to.
@@ -358,12 +394,42 @@ class JDCli:
         Raises:
             JDCliError: If no proxy is running or the port cannot be parsed.
         """
-        result = self.run_command(["jupyter-deploy", "proxy", "show", "--json"])
-        payload = json.loads(result.stdout.strip())
+        payload = self.get_proxy_details()
         port = payload.get("port")
         if not isinstance(port, int):
-            raise JDCliError(f"Could not read proxy port from `jd proxy show --json`: {result.stdout!r}")
+            raise JDCliError(f"Could not read proxy port from `jd proxy show --json`: {payload!r}")
         return port
+
+    def get_proxy_log_dir(self) -> Path:
+        """Return the runtime directory the running proxy writes its status + logs to.
+
+        Raises:
+            JDCliError: If no proxy is running or the log dir cannot be read.
+        """
+        payload = self.get_proxy_details()
+        log_dir = payload.get("log_dir")
+        if not isinstance(log_dir, str) or not log_dir:
+            raise JDCliError(f"Could not read proxy log_dir from `jd proxy show --json`: {payload!r}")
+        return Path(log_dir)
+
+    def get_connect_bundle(self) -> dict:
+        """Return the parsed `jd proxy connect-info` bundle.
+
+        The bundle is what the proxy consumes: ``host``, ``port``, ``ca_cert`` (PEM to pin),
+        ``headers`` (the identity token + binding header) and ``expires_at``. Each call mints
+        a fresh token.
+
+        Raises:
+            JDCliError: If the command fails or does not emit a single JSON document.
+        """
+        result = self.run_command(["jupyter-deploy", "proxy", "connect-info"])
+        try:
+            payload = json.loads(result.stdout.strip())
+        except json.JSONDecodeError as e:
+            raise JDCliError(f"`jd proxy connect-info` did not emit clean JSON: {result.stdout!r}") from e
+        if not isinstance(payload, dict):
+            raise JDCliError(f"Expected a JSON object from `jd proxy connect-info`, got: {result.stdout!r}")
+        return payload
 
     def get_proxy_url(self, path: str = "") -> str:
         """Return the proxy's loopback URL, optionally with a path appended."""
@@ -392,6 +458,75 @@ class JDCli:
                 suppress it — see the ``client_proxy_app`` fixture.
         """
         self.run_command(["jupyter-deploy", "proxy", "stop"])
+
+    def stop_proxy_if_running(self) -> None:
+        """Stop the local proxy if one is running; no-op otherwise.
+
+        The idempotent form of :meth:`stop_proxy`, for setup/teardown that must not care
+        whether a proxy is up (`jd proxy stop` exits non-zero when there is nothing to stop).
+        """
+        with contextlib.suppress(JDCliError):
+            self.stop_proxy()
+
+    def open_app(self, detached: bool = True, timeout_seconds: int | None = 180) -> str:
+        """Run `jd open` and return the URL it reports opening.
+
+        Only valid for ``detached=True``: an attached `jd open` blocks until interrupted, so
+        drive that through :meth:`spawn_interactive_session` instead. Sets $BROWSER to a no-op
+        (see :data:`NOOP_BROWSER`) because the test container has no launchable browser and
+        `jd open` exits non-zero when the launch fails.
+
+        Raises:
+            ValueError: If ``detached`` is False.
+            JDCliError: If the command fails.
+            AssertionError: If no URL could be parsed from the output.
+        """
+        if not detached:
+            raise ValueError("open_app() only supports detached=True; use spawn_interactive_session() for attached.")
+        result = self.run_command(
+            ["jupyter-deploy", "open", "--detached"],
+            timeout_seconds=timeout_seconds,
+            env={"BROWSER": NOOP_BROWSER},
+        )
+        return self.parse_opened_url(result.stdout)
+
+    def proxy_open(self, timeout_seconds: int | None = 120) -> None:
+        """Run `jd proxy open` against the already-running proxy.
+
+        A pure open: it starts nothing, so a proxy must already be running. Prints no URL (unlike
+        `jd open`), so callers that want to drive the browser themselves read the port back from
+        ``jd proxy show`` — see :meth:`get_proxy_url`.
+
+        $BROWSER is stubbed for the same reason as :meth:`open_app`: the container has no launchable
+        browser, and the command exits non-zero when the launch fails.
+
+        Raises:
+            JDCliError: If no proxy is running, or the command fails.
+        """
+        self.run_command(
+            ["jupyter-deploy", "proxy", "open"], timeout_seconds=timeout_seconds, env={"BROWSER": NOOP_BROWSER}
+        )
+
+    @staticmethod
+    def strip_ansi(output: str) -> str:
+        """Return ``output`` with ANSI escape sequences removed.
+
+        Needed only when reading a pty: rich disables styling when stdout is a pipe, so
+        ``run_command`` output is already clean. Under pexpect it is fully styled — including
+        styling a URL as its own span, which breaks any pattern spanning the label and the URL.
+        """
+        return _ANSI_RE.sub("", output)
+
+    @staticmethod
+    def parse_opened_url(output: str) -> str:
+        """Return the URL from a `jd open` "Opening app at: <url>" line.
+
+        Raises:
+            AssertionError: If the line is absent.
+        """
+        match = re.search(r"Opening app at:\s+(\S+)", output)
+        assert match is not None, f"Could not find 'Opening app at: <url>' in output:\n{output}"
+        return match.group(1)
 
     def get_str_output(self, output_name: str) -> str:
         """Return a template output value as text via `jd show --output <name> --text`.
@@ -479,6 +614,7 @@ class JDCli:
         command: str,
         timeout: int = 30,
         encoding: str = "utf-8",
+        env: dict[str, str] | None = None,
     ) -> Generator[pexpect.spawn, None, None]:
         """Spawn an interactive command session using pexpect.
 
@@ -489,6 +625,8 @@ class JDCli:
             command: Command to spawn (e.g., "jupyter-deploy host connect")
             timeout: Default timeout in seconds for expect operations
             encoding: Character encoding for the session
+            env: Extra environment variables, merged over the current environment (not
+                replacing it). Needed for e.g. $BROWSER on an attached `jd open`.
 
         Yields:
             pexpect.spawn instance for interacting with the session
@@ -506,6 +644,7 @@ class JDCli:
                 cwd=str(self.project_dir),
                 timeout=timeout,
                 encoding=encoding,
+                env={**os.environ, **env} if env else None,
             )
             yield child
         finally:

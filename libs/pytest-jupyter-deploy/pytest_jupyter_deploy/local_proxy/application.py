@@ -56,6 +56,61 @@ class LocalProxyApplication:
         logger.info("Local proxy started; app URL: %s", self.jupyterlab_url)
         return self.jupyterlab_url
 
+    def attach(self) -> str:
+        """Bind to an already-running proxy and return the loopback URL to the app.
+
+        The read-only counterpart of :meth:`start`: it launches nothing, it reads the bound
+        port back from ``jd proxy show``. Lets a browser test drive a proxy owned by a
+        longer-lived (e.g. module-scoped) fixture without restarting it — a `jd proxy start`
+        costs a ``connect-info`` round-trip plus a bind.
+
+        Returns:
+            The loopback URL the app is served at (e.g. "http://127.0.0.1:54321/lab").
+
+        Raises:
+            JDCliError: If no proxy is running for the project.
+        """
+        app_path = self.deployment.get_manifest().get_open().path
+        self.jupyterlab_url = self.deployment.cli.get_proxy_url(path=app_path)
+        logger.info("Attached to running proxy; app URL: %s", self.jupyterlab_url)
+        return self.jupyterlab_url
+
+    def open_via_cli(self, detached: bool = True) -> str:
+        """Let `jd open` own the proxy lifecycle, then aim the browser at the URL it reports.
+
+        The full user-facing flow for a proxy-mode template, in one call: `jd open` replaces any
+        running proxy, waits for the app to answer, and prints the loopback URL — and this then
+        points the browser at *that* URL rather than one the test assembled itself. Pair it with
+        :meth:`verify_jupyterlab_accessible` to assert the app really renders, which is the only way
+        to catch a URL that is well-formed but unusable.
+
+        Returns:
+            The loopback URL `jd open` reported.
+
+        Raises:
+            JDCliError: If `jd open` fails.
+            AssertionError: If no URL could be parsed from its output.
+        """
+        self.jupyterlab_url = self.deployment.cli.open_app(detached=detached)
+        logger.info("`jd open` reported app URL: %s", self.jupyterlab_url)
+        return self.jupyterlab_url
+
+    def open_tab_via_cli(self) -> str:
+        """Run `jd proxy open` against the running proxy, then aim the browser at it.
+
+        `jd proxy open` prints no URL (it only opens a tab), so the URL is read back from
+        ``jd proxy show``. Asserts nothing by itself — pair it with
+        :meth:`verify_jupyterlab_accessible`.
+
+        Returns:
+            The loopback URL the running proxy serves the app at.
+
+        Raises:
+            JDCliError: If no proxy is running, or the command fails.
+        """
+        self.deployment.cli.proxy_open()
+        return self.attach()
+
     def stop(self) -> None:
         """Stop the local proxy.
 
@@ -96,4 +151,39 @@ class LocalProxyApplication:
         raise AssertionError(
             f"JupyterLab did not become accessible at {self.jupyterlab_url} "
             f"after {max_retries} attempts. Last error: {last_error}"
+        )
+
+    def verify_app_status(self, expected_status: int, timeout_ms: int = 60000) -> None:
+        """Navigate to the app through the proxy and assert the status the *browser* received.
+
+        The counterpart of :meth:`verify_jupyterlab_accessible` for the cases where the app must
+        NOT load: that method can only report "the shell did not render", which a 403, a 502 and a
+        DNS failure all satisfy. ``page.goto()`` returns the navigation's own response, so the
+        status is available and "forbidden" stays distinguishable from "did not load".
+
+        Unlike :meth:`verify_jupyterlab_accessible` this does not retry — callers assert a status
+        that has already settled, and a retry loop would mask a *transient* wrong status, which is
+        exactly what a caller checking for a denial wants to see.
+
+        Args:
+            expected_status: The HTTP status the navigation must answer with.
+            timeout_ms: Navigation timeout.
+
+        Raises:
+            RuntimeError: If ``start()``/``attach()`` has not been called.
+            AssertionError: If the navigation returned no response, or a different status.
+        """
+        if self.jupyterlab_url is None:
+            raise RuntimeError("Call start() or attach() before verify_app_status().")
+
+        # `commit` rather than `load`: an error page's subresources are irrelevant here, and
+        # waiting for them on a body Traefik generated is a way to time out on a correct answer.
+        response = self.page.goto(self.jupyterlab_url, timeout=timeout_ms, wait_until="commit")
+
+        assert response is not None, (
+            f"Navigation to {self.jupyterlab_url} returned no response; the proxy is not answering "
+            f"on its loopback port (expected status {expected_status})"
+        )
+        assert response.status == expected_status, (
+            f"Expected the browser to receive {expected_status} from {self.jupyterlab_url}, got {response.status}"
         )

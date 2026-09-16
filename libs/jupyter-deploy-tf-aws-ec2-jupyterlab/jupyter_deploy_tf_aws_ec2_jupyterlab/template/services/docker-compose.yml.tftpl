@@ -100,8 +100,11 @@ services:
     depends_on:
       - fluent-bit
     healthcheck:
+      # 5s, not 30s: `docker compose up -d auth-sidecar --wait` settles on THIS cadence, and an
+      # allowlist edit recreates the sidecar on every `jd teams`/`jd users` call. At 30s the wait
+      # looked like a flake and got swallowed; at 5s it is a usable gate (healthy in ~10s).
       test: ["CMD", "/auth-sidecar", "-healthcheck"]
-      interval: 30s
+      interval: 5s
       timeout: 5s
       retries: 3
       start_period: 5s

@@ -46,6 +46,15 @@ def pytest_configure(config: Any) -> None:
         "markers",
         "full_deployment: mark test as requiring full deployment from scratch",
     )
+    # Not to be confused with `cli`: `cli` selects the subset that runs in the slim CLI image
+    # for install-variant validation — against a restored, already deployed project.
+    # `no_deploy` means the test never calls ensure_deployed() at all (it owns an isolated
+    # `undeployed_project()`), so it can run with AWS credentials and no deployment.
+    # A test may carry both.
+    config.addinivalue_line(
+        "markers",
+        "no_deploy: mark test as needing no deployment (uses an isolated undeployed project)",
+    )
 
 
 def skip_if_testvars_not_set(required_vars: list[str]) -> Callable[[F], F]:
@@ -94,6 +103,15 @@ def pytest_addoption(parser: Any) -> None:
         action="store",
         default=None,
         help="Path to existing jupyter-deploy project (skips deployment, uses existing infrastructure)",
+    )
+    add_option_if_not_exists(
+        "--e2e-project-dir",
+        action="store",
+        default=None,
+        help=(
+            "Directory to deploy INTO when deploying from scratch (default: sandbox-e2e). "
+            "Must match the directory mounted into the test container."
+        ),
     )
     add_option_if_not_exists(
         "--deploy-timeout-seconds",
@@ -199,9 +217,15 @@ def e2e_config(e2e_suite_dir: Path, request: pytest.FixtureRequest) -> SuiteConf
         SuiteConfig instance with loaded configuration
     """
     existing_project = request.config.getoption("--e2e-existing-project")
+    fresh_project = request.config.getoption("--e2e-project-dir")
 
     existing_project_dir = Path(existing_project) if isinstance(existing_project, str) and existing_project else None
-    return SuiteConfig(suite_dir=e2e_suite_dir, existing_project_dir=existing_project_dir)
+    fresh_project_dir = Path(fresh_project).absolute() if isinstance(fresh_project, str) and fresh_project else None
+    return SuiteConfig(
+        suite_dir=e2e_suite_dir,
+        existing_project_dir=existing_project_dir,
+        fresh_project_dir=fresh_project_dir,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -347,16 +371,23 @@ def client_proxy_app(page: Page, e2e_deployment: EndToEndDeployment) -> Generato
     """Local client-proxy application helper (templates with no public OAuth URL).
 
     For templates that reach JupyterLab through the ``jupyter-deploy`` client proxy over
-    pinned TLS + STS-identity auth (e.g. aws-ec2-jupyterlab). Ensures the server is running,
+    pinned TLS + STS-identity auth (e.g. aws-ec2-jupyterlab). Ensures the project is deployed,
     starts the local proxy, and yields a :class:`LocalProxyApplication` pointed at the
     loopback URL. Stops the proxy on teardown.
+
+    Deliberately calls ``ensure_deployed()`` and *not* ``ensure_server_running()``, mirroring
+    ``github_oauth_app``: the latter runs ``jd server restart`` whenever the server does not
+    report available, which would silently heal exactly the failure the
+    ``full_deployment`` "app answers the instant ``jd up`` returns" test exists to detect.
+    Tests that need a running server (rather than asserting one) call
+    ``ensure_server_running()`` themselves.
 
     Unlike ``github_oauth_app`` this needs no bot credentials / ``--ci-dir`` — there is no
     browser sign-in; the proxy injects the identity token itself.
 
     Note: function-scoped to match the ``page`` fixture from pytest-playwright.
     """
-    e2e_deployment.ensure_server_running()
+    e2e_deployment.ensure_deployed()
     app = LocalProxyApplication(page=page, deployment=e2e_deployment)
     # `jd proxy start` refuses to replace a running proxy, so clear any leaked by an
     # interrupted prior run first — otherwise start() errors at setup for every test here.

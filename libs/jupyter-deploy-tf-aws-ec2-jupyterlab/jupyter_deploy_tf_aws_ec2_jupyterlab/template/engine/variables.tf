@@ -40,6 +40,22 @@ variable "instance_type" {
   type        = string
 }
 
+variable "availability_zone" {
+  description = <<-EOT
+    The availability zone to place the EC2 instance and its EBS volumes in.
+
+    Use "any" to accept the first subnet of the default VPC, whichever zone that happens to be.
+    Set it when the instance type you want has no capacity in that zone: an instance type is not
+    offered in every zone, and even where offered it can be refused for lack of capacity.
+
+    Changing this on an existing deployment is NOT supported: EBS volumes cannot cross zones, so
+    the data volume would have to be snapshotted and restored. Choose it at deployment time.
+
+    Recommended: any
+  EOT
+  type        = string
+}
+
 variable "ami_id" {
   description = <<-EOT
     The Amazon machine image ID to pin for your EC2 instance.

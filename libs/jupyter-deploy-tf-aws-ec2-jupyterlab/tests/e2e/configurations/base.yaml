@@ -3,4 +3,7 @@
 schema_version: 2
 required: {}
 required_sensitive: {}
-overrides: {}
+overrides:
+  # Expanded from the environment by the plugin (os.path.expandvars): keep JD_E2E_AVAILABILITY_ZONE
+  # set in .env, or the literal placeholder reaches terraform and the plan fails on an unknown zone.
+  availability_zone: $JD_E2E_AVAILABILITY_ZONE

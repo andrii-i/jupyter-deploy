@@ -85,18 +85,15 @@ module "ec2_instance" {
   source                  = "./modules/ec2_instance"
   ami_id                  = coalesce(var.ami_id, module.ami_al2023.ami_id)
   instance_type           = var.instance_type
-  subnet_id               = module.network.subnet_ids[0]
+  vpc_id                  = module.network.vpc_id
+  subnet_ids              = module.network.subnet_ids
+  availability_zone       = var.availability_zone
   security_group_id       = module.network.security_group_id
   combined_tags           = local.combined_tags
   postfix                 = local.doc_postfix
   region                  = var.region
   min_root_volume_size_gb = var.min_root_volume_size_gb
   instance_profile_name   = module.ec2_iam_role.instance_profile_name
-}
-
-# Query the selected subnet to get its AZ (known at plan time, avoids EBS volume replacement)
-data "aws_subnet" "selected" {
-  id = module.ec2_instance.subnet_id
 }
 
 # Volumes module for EBS/EFS volumes
@@ -109,7 +106,8 @@ module "volumes" {
   volume_type           = var.volume_type
   additional_ebs_mounts = var.additional_ebs_mounts
   additional_efs_mounts = var.additional_efs_mounts
-  availability_zone     = data.aws_subnet.selected.availability_zone
+  availability_zone     = module.ec2_instance.availability_zone
+  subnet_id             = module.ec2_instance.subnet_id
   instance_id           = module.ec2_instance.id
   efs_security_group_id = module.network.efs_security_group_id
 }

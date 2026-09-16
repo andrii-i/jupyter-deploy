@@ -2,6 +2,7 @@
 region                     = "us-west-2"
 jupyter_package_manager    = "uv"
 instance_type              = "t3.medium"
+availability_zone          = "any"
 ami_id                     = null
 min_root_volume_size_gb    = 30
 volume_size_gb             = 30

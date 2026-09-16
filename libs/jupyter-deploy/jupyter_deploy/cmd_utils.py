@@ -236,6 +236,15 @@ def is_pid_alive(pid: int) -> bool:
     The ``pid <= 0`` guard rejects the sentinel/negative values, since ``os.kill`` treats
     ``0`` and negatives as "signal my process group / every process" rather than a lookup.
 
+    A **zombie** is reported as NOT alive. A process that has exited but whose parent has not
+    reaped it still occupies a PID, so ``os.kill(pid, 0)`` succeeds for it — yet it is dead, and
+    no signal will ever change that. This matters in containers: a detached proxy is orphaned
+    when its launcher exits and is reparented to PID 1, and a PID 1 that does not reap (the
+    ``sleep infinity`` of a typical test/dev container) leaves it a zombie forever. Counting that
+    as alive made :func:`terminate_process` burn its whole SIGTERM timeout, escalate to SIGKILL,
+    and still report failure — so ``jd proxy stop`` printed "No running proxy found" and exited
+    non-zero for a proxy it had just stopped correctly.
+
     Caveat: PIDs are recycled, so a True result means *some* process holds that PID, not
     necessarily the original one. That best-effort guarantee is sufficient for liveness
     reporting.
@@ -247,8 +256,18 @@ def is_pid_alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
+        # The process exists but is owned by another user we may not signal. We also cannot
+        # inspect its status, so take its existence at face value.
         return True
-    return True
+
+    try:
+        return bool(psutil.Process(pid).status() != psutil.STATUS_ZOMBIE)
+    except psutil.NoSuchProcess:
+        return False
+    except Exception:
+        # Cannot read the status (permissions, no /proc, unsupported platform): fall back to
+        # what the signal-0 probe already told us.
+        return True
 
 
 def get_pid_create_time(pid: int) -> float | None:

@@ -2255,6 +2255,7 @@ dependencies = [
     { name = "pytest-order" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "websocket-client" },
 ]
 
 [package.optional-dependencies]
@@ -2282,6 +2283,7 @@ requires-dist = [
     { name = "pytest-playwright", marker = "extra == 'ui'", specifier = ">=0.7.2" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "requests", specifier = ">=2.32.0" },
+    { name = "websocket-client", specifier = ">=1.8.0" },
 ]
 provides-extras = ["ui"]
 

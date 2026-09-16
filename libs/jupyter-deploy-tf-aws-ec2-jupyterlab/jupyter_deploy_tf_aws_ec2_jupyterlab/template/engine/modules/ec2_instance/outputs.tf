@@ -9,8 +9,8 @@ output "arn" {
 }
 
 output "availability_zone" {
-  description = "Availability zone of the EC2 instance."
-  value       = aws_instance.ec2_jupyter_server.availability_zone
+  description = "Availability zone the instance and its volumes are placed in (known at plan time)."
+  value       = data.aws_subnet.selected.availability_zone
 }
 
 output "public_ip" {
@@ -40,5 +40,5 @@ output "instance_type" {
 
 output "subnet_id" {
   description = "Subnet ID where the EC2 instance is placed."
-  value       = var.subnet_id
+  value       = local.selected_subnet_id
 }

@@ -9,6 +9,7 @@ from jupyter_deploy.api.aws.ssm.ssm_command import (
     poll_command,
     send_cmd_to_one_instance_and_wait_sync,
 )
+from jupyter_deploy.exceptions import InvalidInstructionArgumentError
 
 
 class TestIsTerminalCommandInvocationStatus(unittest.TestCase):
@@ -221,6 +222,26 @@ class TestSendCmdToOneInstanceAndWaitSync(unittest.TestCase):
         # Execute & Assert
         with self.assertRaises(botocore.exceptions.ClientError):
             send_cmd_to_one_instance_and_wait_sync(mock_client, "AWS-RunShellScript", "i-123")
+
+    @patch("time.sleep")
+    def test_invalid_parameters_becomes_a_handled_error(self, mock_sleep: Mock) -> None:
+        # An SSM document constrains its parameters with allowedValues/allowedPattern, so a
+        # rejected value is a *user* error (e.g. `jd server exec -s <unsupported-service>`), not a
+        # fault. AWS's own message names no parameter, so an unhandled ClientError showed a
+        # botocore traceback and nothing actionable; it must surface as a handled error instead.
+        mock_client = Mock()
+        mock_client.send_command.side_effect = botocore.exceptions.ClientError(
+            {"Error": {"Code": "InvalidParameters", "Message": "Parameters provided in document are invalid."}},
+            "SendCommand",
+        )
+
+        with self.assertRaises(InvalidInstructionArgumentError) as ctx:
+            send_cmd_to_one_instance_and_wait_sync(mock_client, "my-exec-document", "i-123")
+
+        message = str(ctx.exception)
+        self.assertIn("my-exec-document", message)
+        self.assertIn("Parameters provided in document are invalid.", message)
+        self.assertIn("not every", message)
 
     @patch("time.sleep")
     def test_raises_if_poll_command_raises(self, mock_sleep: Mock) -> None:

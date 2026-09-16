@@ -88,6 +88,61 @@ class _ManagerTestCase(unittest.TestCase):
         return instance_dir
 
 
+class TestLatestRunning(_ManagerTestCase):
+    def test_dead_pid_with_a_running_status_file_is_not_a_running_proxy(self) -> None:
+        # A proxy killed without running its shutdown path (SIGKILL, OOM) leaves a status.json
+        # still saying "running" behind a dead PID. Reporting that as running wedged the project:
+        # `status` said running, `start` refused with ProxyAlreadyRunningError, and `stop` could
+        # not stop it (it skips records whose process is gone) — no CLI way out.
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self._manager_rooted_at(tmp)
+            self._write_instance(
+                manager,
+                "20260610-180100.123",
+                {"schema_version": 1, "state": "running", "pid": 4321, "port": 51000, "process_created_at": 1.0},
+            )
+            with (
+                patch("jupyter_deploy.proxy.proxy_manager.cmd_utils.is_pid_alive", return_value=False),
+                patch("jupyter_deploy.proxy.proxy_manager.cmd_utils.get_pid_create_time", return_value=1.0),
+                patch("jupyter_deploy.proxy.proxy_utils.cmd_utils.is_pid_alive", return_value=False),
+            ):
+                self.assertIsNone(manager._latest_running())
+
+    def test_live_confirmed_pid_is_a_running_proxy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self._manager_rooted_at(tmp)
+            self._write_instance(
+                manager,
+                "20260610-180100.123",
+                {"schema_version": 1, "state": "running", "pid": 4321, "port": 51000, "process_created_at": 1.0},
+            )
+            with (
+                patch("jupyter_deploy.proxy.proxy_manager.cmd_utils.get_pid_create_time", return_value=1.0),
+                patch("jupyter_deploy.proxy.proxy_utils.cmd_utils.is_pid_alive", return_value=True),
+            ):
+                status = manager._latest_running()
+            assert status is not None
+            self.assertEqual(status.pid, 4321)
+            self.assertEqual(status.port, 51000)
+
+
+class TestTerminateRunning(_ManagerTestCase):
+    def test_removes_stale_status_file_of_a_dead_proxy(self) -> None:
+        # Housekeeping for the case above: once the process is gone, drop the status file so
+        # later scans skip the directory and no stale record claims to be running. The PID is
+        # NOT reported as stopped — we did not stop it.
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = self._manager_rooted_at(tmp)
+            instance_dir = self._write_instance(
+                manager,
+                "20260610-180100.123",
+                {"schema_version": 1, "state": "running", "pid": 4321, "port": 51000, "process_created_at": 1.0},
+            )
+            with patch("jupyter_deploy.proxy.proxy_utils.cmd_utils.is_pid_alive", return_value=False):
+                self.assertEqual(manager._terminate_running(), [])
+            self.assertFalse((instance_dir / "status.json").exists())
+
+
 class TestLaunch(_ManagerTestCase):
     def test_creates_timestamped_instance_dir_under_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

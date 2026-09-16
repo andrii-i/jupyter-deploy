@@ -5,6 +5,8 @@ from mypy_boto3_ssm.client import SSMClient
 from mypy_boto3_ssm.literals import CommandInvocationStatusType
 from mypy_boto3_ssm.type_defs import GetCommandInvocationResultTypeDef, SendCommandRequestTypeDef
 
+from jupyter_deploy.exceptions import InvalidInstructionArgumentError
+
 TERMINAL_COMMAND_STATUS: list[CommandInvocationStatusType] = ["Cancelled", "Failed", "Success", "TimedOut"]
 
 
@@ -62,7 +64,23 @@ def send_cmd_to_one_instance_and_wait_sync(
     if parameters:
         request["Parameters"] = parameters
 
-    send_command_result = client.send_command(**request)
+    try:
+        send_command_result = client.send_command(**request)
+    except botocore.exceptions.ClientError as e:
+        # A rejected parameter is a *user* error, not a fault: an SSM document constrains its
+        # parameters with allowedValues/allowedPattern, so `jd server exec -s <unsupported>`
+        # lands here. AWS's message is deliberately vague ("Parameters provided in document are
+        # invalid or not supported") and names no parameter, so an unhandled ClientError showed
+        # the user a botocore traceback and nothing actionable. Map it to a handled error and
+        # say where to look.
+        if e.response.get("Error", {}).get("Code") == "InvalidParameters":
+            message = e.response.get("Error", {}).get("Message", "invalid or unsupported parameters")
+            raise InvalidInstructionArgumentError(
+                f"AWS rejected the parameters for SSM document '{document_name}': {message} "
+                "Check that the argument values are supported for this command — not every "
+                "service or option is available for every command."
+            ) from e
+        raise
 
     command_id = send_command_result["Command"].get("CommandId")
     if not command_id:

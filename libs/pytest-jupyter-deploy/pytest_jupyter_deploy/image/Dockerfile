@@ -61,6 +61,10 @@ RUN set -e; \
 WORKDIR /workspace
 RUN chown ${USER_UID}:${USER_GID} /workspace
 
+# NOTE: no terraform plugin-cache dir is created here. TF_PLUGIN_CACHE_DIR points at the HOST
+# ${HOME} path, which docker-compose.yml bind-mounts at the identical absolute path inside the
+# container (see the rationale there), so a /home/testuser copy would never be read.
+
 # Install Playwright system dependencies only (browsers will be installed after uv sync)
 # We install system deps here so they're cached in the image layer
 RUN apt-get update && \

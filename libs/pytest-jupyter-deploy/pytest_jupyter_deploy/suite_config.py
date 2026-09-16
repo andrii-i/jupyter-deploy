@@ -29,16 +29,27 @@ class SuiteConfig:
     manifest: JupyterDeployManifest
     variables_config: JupyterDeployVariablesConfig
 
-    def __init__(self, suite_dir: Path, existing_project_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        suite_dir: Path,
+        existing_project_dir: Path | None = None,
+        fresh_project_dir: Path | None = None,
+    ) -> None:
         """Instantiate the suite config.
 
         Args:
             suite_dir (Path): base directory of the e2e test suite
             existing_project_dir (Path): directory where the jupyter-deploy is deployed.
+            fresh_project_dir (Path): directory to deploy INTO when deploying from scratch.
+                Defaults to ``sandbox-e2e``. The caller (the justfile) mounts a chosen project
+                directory into the container, so without this the fixture would deploy into
+                ``sandbox-e2e`` while the mount pointed somewhere else — silently ignoring the
+                requested directory. Ignored when ``existing_project_dir`` is set.
         """
 
         self.suite_dir = suite_dir
         self._existing_project_dir = existing_project_dir
+        self._fresh_project_dir = fresh_project_dir
         self._loaded = False
 
     def references_existing_project(self) -> bool:
@@ -65,8 +76,8 @@ class SuiteConfig:
             self.manifest = retrieve_project_manifest(template_dir_path / jd_constants.MANIFEST_FILENAME)
             self.variables_config = retrieve_variables_config(template_dir_path / jd_constants.VARIABLES_FILENAME)
 
-            # Use a fixed sandbox directory (mounted in container)
-            self.project_dir = Path(os.getcwd()) / constants.SANDBOX_E2E_DIR
+            # Deploy into the directory the caller mounted, defaulting to the fixed sandbox dir.
+            self.project_dir = self._fresh_project_dir or Path(os.getcwd()) / constants.SANDBOX_E2E_DIR
         self._loaded = True
 
     def find_template_dir_path(self) -> Path:
