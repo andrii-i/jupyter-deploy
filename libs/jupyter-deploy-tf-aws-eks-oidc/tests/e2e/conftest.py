@@ -16,26 +16,22 @@ from pytest_jupyter_deploy.workspaces.kubectl import (
 )
 from pytest_jupyter_deploy.workspaces.template import get_min_idle_timeout, set_min_idle_timeout
 
+from .constants import GPU_NODEPOOL
+
 WORKSPACE_NAMESPACE = "default"
 WORKSPACES_DIR = Path(__file__).parent / "workspaces"
 
-# The Karpenter NodePool enable_default_gpu_pool synthesizes.
-GPU_NODEPOOL = "workspace-gpu"
 
-
-def gpu_pool_deployed() -> bool:
-    """True when the cluster currently has the workspace-gpu NodePool."""
-    return not resource_absent("nodepools.karpenter.sh", GPU_NODEPOOL)
-
-
-def require_gpu_pool() -> None:
-    """Skip the calling test unless the deployment currently has the GPU pool.
+@pytest.fixture
+def gpu_pool_required(e2e_deployment: EndToEndDeployment, kubernetes_cluster_login: None) -> None:
+    """Skip the test unless the deployment currently has the GPU pool.
 
     JD_E2E_GPU_ENABLED alone does not imply the pool exists: CI sets it against
     deployments with enable_default_gpu_pool off, and the GPU module enables
     the pool itself.
     """
-    if not gpu_pool_deployed():
+    e2e_deployment.ensure_deployed()
+    if resource_absent("nodepools.karpenter.sh", GPU_NODEPOOL):
         pytest.skip("Deployment does not have the workspace-gpu NodePool (enable_default_gpu_pool off)")
 
 

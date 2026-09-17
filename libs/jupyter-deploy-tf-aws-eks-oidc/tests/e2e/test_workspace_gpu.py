@@ -27,22 +27,20 @@ from pytest_jupyter_deploy.workspaces.kubectl import (
 )
 from pytest_jupyter_deploy.workspaces.web_app import WebAppNavigator
 
-from .conftest import GPU_NODEPOOL, WORKSPACE_NAMESPACE, WORKSPACES_DIR, gpu_pool_deployed, require_gpu_pool
+from .conftest import WORKSPACE_NAMESPACE, WORKSPACES_DIR
+from .constants import (
+    GPU_EC2NODECLASS,
+    GPU_NODEPOOL,
+    GPU_POOL_FLAG,
+    GPU_ROLE,
+    GPU_ROLE_SELECTOR,
+    GPU_TEMPLATE_DISPLAY_NAME,
+    GPU_TEMPLATE_NAME,
+    GPU_WORKSPACE,
+    ORDER_GPU,
+)
 
 NOTEBOOKS_DIR = Path(__file__).parent / "notebooks"
-
-GPU_POOL_FLAG = "enable_default_gpu_pool"
-GPU_WORKSPACE = "e2e-gpu-workspace"
-GPU_TEMPLATE_NAME = "jupyterlab-gpu"
-# Display name of the default GPU WorkspaceTemplate the flag synthesizes
-# (engine/platform_karpenter.tf), rendered as a card on the create page.
-GPU_TEMPLATE_DISPLAY_NAME = "JupyterLab GPU"
-GPU_ROLE = "workspaces-gpu"
-GPU_ROLE_SELECTOR = f"jupyter-deploy/role={GPU_ROLE}"
-# The karpenter-nodepools chart names each pool's EC2NodeClass after the pool.
-GPU_EC2NODECLASS = GPU_NODEPOOL
-
-ORDER_GPU = 10
 
 # Bound for the Karpenter termination finalizers to clear after the flag-off
 # apply; #349's stuck finalizer never clears, so a timeout is the regression.
@@ -105,7 +103,9 @@ def test_enable_gpu_pool(e2e_deployment: EndToEndDeployment) -> None:
     e2e_deployment.ensure_deployed()
     _apply_gpu_pool_flag(e2e_deployment, True)
 
-    assert gpu_pool_deployed(), "workspace-gpu NodePool missing after enabling enable_default_gpu_pool"
+    assert not resource_absent("nodepools.karpenter.sh", GPU_NODEPOOL), (
+        "workspace-gpu NodePool missing after enabling enable_default_gpu_pool"
+    )
 
     result = e2e_deployment.cli.run_command(["jupyter-deploy", "pool", "list"])
     assert GPU_NODEPOOL in result.stdout, f"Expected pool '{GPU_NODEPOOL}' in pool list output:\n{result.stdout}"
@@ -120,6 +120,7 @@ def test_enable_gpu_pool(e2e_deployment: EndToEndDeployment) -> None:
 
 @pytest.mark.order(ORDER_GPU + 1)
 @skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED", "JD_E2E_USER"])
+@pytest.mark.usefixtures("gpu_pool_required")
 def test_kubectl_gpu_workspace_runs_cuda_notebook(
     e2e_deployment: EndToEndDeployment,
     dex_oauth_app: DexGitHubOAuth2ProxyApplication,
@@ -130,7 +131,6 @@ def test_kubectl_gpu_workspace_runs_cuda_notebook(
     node (role label + taint + nvidia.com/gpu.present) with a registered device.
     """
     e2e_deployment.ensure_deployed()
-    require_gpu_pool()
 
     # Clean up any leftover workspace from a previous test run.
     with contextlib.suppress(Exception):
@@ -199,13 +199,13 @@ def test_kubectl_gpu_workspace_runs_cuda_notebook(
 
 @pytest.mark.order(ORDER_GPU + 2)
 @skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED", "JD_E2E_USER"])
+@pytest.mark.usefixtures("gpu_pool_required")
 def test_ui_created_gpu_workspace_runs_cuda_notebook(
     e2e_deployment: EndToEndDeployment,
     dex_oauth_web_app: WebAppNavigator,
 ) -> None:
     """UI critical path: create from the GPU template card, await, open, torch sees CUDA."""
     e2e_deployment.ensure_deployed()
-    require_gpu_pool()
 
     name = dex_oauth_web_app.create_workspace_from_template(GPU_TEMPLATE_DISPLAY_NAME)
     try:
@@ -234,10 +234,10 @@ def test_ui_created_gpu_workspace_runs_cuda_notebook(
 
 @pytest.mark.order(ORDER_GPU + 3)
 @skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
+@pytest.mark.usefixtures("gpu_pool_required")
 def test_gpu_pool_scales_to_zero_after_workspace_deletion(e2e_deployment: EndToEndDeployment) -> None:
     """With every GPU workspace deleted, the pool releases its nodes back to zero."""
     e2e_deployment.ensure_deployed()
-    require_gpu_pool()
 
     poll(
         lambda: _gpu_node_count() == 0,
@@ -248,6 +248,7 @@ def test_gpu_pool_scales_to_zero_after_workspace_deletion(e2e_deployment: EndToE
 
 @pytest.mark.order(ORDER_GPU + 4)
 @skip_if_testvars_not_set(["JD_E2E_GPU_ENABLED"])
+@pytest.mark.usefixtures("gpu_pool_required")
 def test_disable_gpu_pool_deletes_nodepool_and_ec2nodeclass(e2e_deployment: EndToEndDeployment) -> None:
     """Disabling the flag drains the nodes and fully deletes the pool (#349).
 
@@ -255,7 +256,6 @@ def test_disable_gpu_pool_deletes_nodepool_and_ec2nodeclass(e2e_deployment: EndT
     of hanging on the Karpenter termination finalizers.
     """
     e2e_deployment.ensure_deployed()
-    require_gpu_pool()
 
     _apply_gpu_pool_flag(e2e_deployment, False)
     poll(
