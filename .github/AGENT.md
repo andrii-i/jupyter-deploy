@@ -13,16 +13,17 @@
 | `e2e-cli.yml` | `workflow_call` | CLI release E2E gate — smoke tests (bare/aws/aws-k8s/aws-proxy) + functional tests against base app #2 and EKS app #5 |
 | `release-eks-oidc.yml` | `workflow_dispatch` | Release `jupyter-deploy-tf-aws-eks-oidc` to PyPI (with E2E gate) |
 | `e2e-base.yml` | `workflow_dispatch` | E2E tests against an existing deployment |
-| `e2e-base-fresh.yml` | `workflow_dispatch` / `workflow_call` | Deploy from scratch + full E2E chain |
+| `e2e-base-fresh.yml` | `workflow_dispatch` / `workflow_call` | Deploy from scratch + full E2E chain; `install-mode` / `install-variant` / `pkg-version` are dispatch inputs too, so a manual run can install from PyPI like the release gate or the canary |
 | `e2e-base-release.yml` | `workflow_call` | Base template release E2E gate — calls fresh workflow with Test PyPI install |
-| `e2e-base-canary.yml` | `schedule` / `workflow_dispatch` | Weekly canary — calls fresh workflow |
+| `e2e-base-canary.yml` | `schedule` / `workflow_dispatch` | Weekly canary: runs the released version's fresh workflow at its release tag via `e2e-canary-dispatch.yml`; falls back to main's fresh workflow until a release carries the dispatch inputs |
 | `e2e-base-job.yml` | `workflow_call` | Reusable base E2E job (called by the above) |
 | `e2e-eks-oidc.yml` | `workflow_dispatch` | EKS E2E tests against an existing deployment |
-| `e2e-eks-oidc-fresh.yml` | `workflow_dispatch` / `workflow_call` | Deploy EKS from scratch (in-container, so pypi-mode deploys the published package) + full E2E chain |
+| `e2e-eks-oidc-fresh.yml` | `workflow_dispatch` / `workflow_call` | Deploy EKS from scratch (in-container, so pypi-mode deploys the published package) + full E2E chain; same dispatch inputs as base |
 | `e2e-eks-oidc-release.yml` | `workflow_call` | EKS template release E2E gate — calls fresh workflow with Test PyPI install |
-| `e2e-eks-oidc-canary.yml` | `schedule` / `workflow_dispatch` | Weekly canary — calls fresh workflow |
+| `e2e-eks-oidc-canary.yml` | `schedule` / `workflow_dispatch` | Weekly canary: runs the released version's fresh workflow at its release tag via `e2e-canary-dispatch.yml`; falls back to main's fresh workflow until a release carries the dispatch inputs |
 | `e2e-eks-oidc-job.yml` | `workflow_call` | Reusable EKS E2E job (called by the above) |
 | `e2e-build-image.yml` | `workflow_call` | Reusable build-and-push E2E image to ECR (`TEMPLATE` build-arg selects base vs eks-oidc for pypi-mode installs) |
+| `e2e-canary-dispatch.yml` | `workflow_call` | Reusable canary scheduler: resolves the template's version on PyPI, dispatches its fresh workflow at tag `<pkg>==<version>` in canary mode, waits and mirrors the result |
 
 ## OAuth app slots
 
@@ -42,8 +43,9 @@ mode determines what actually gets deployed:
 - **workspace** (default, PR/manual) — local source via `uv sync --all-packages`.
 - **pypi + release** (release gate) — the package under test pinned from Test PyPI
   (`pkg-version`), the rest from prod PyPI. Renders `.github/e2e-<template>/pyproject.release.toml`.
-- **pypi + canary** (scheduled canary) — everything from prod PyPI, unpinned. Uses
-  `.github/e2e-<template>/pyproject.canary.toml`.
+- **pypi + canary** (scheduled canary) — CLI and template from prod PyPI, unpinned; the
+  `pytest-jupyter-deploy` harness from the checkout, since the tests import their fixtures from it.
+  Uses `.github/e2e-<template>/pyproject.canary.toml`.
 
 The E2E image is **template-shared** (one `.github/e2e-shared/Dockerfile`, used by both
 base and eks-oidc). The `TEMPLATE` build-arg on `e2e-build-image.yml` / the Dockerfile
@@ -55,6 +57,25 @@ steps via `just ci-e2e-eks-deploy` (deploy happens *in the container*, so a pypi
 deploys the published package). The ~30-min deploy is readable in its own job; the
 `test_deployment` verify then runs separately against the now-existing project. The job's
 `timeout-minutes` bounds the deploy.
+
+## Canary at the release tag
+
+The canary tests the version users install. `e2e-<template>-canary.yml` calls `e2e-canary-dispatch.yml`,
+which reads the template's released version on PyPI, resolves the release tag `<pkg>==<version>`, dispatches
+the template's fresh workflow at that tag with `install-mode=pypi install-variant=canary`, so tests, e2e
+config, justfile, harness and workflow file all come from the release, then polls the run until it completes
+and fails with it. The failure email therefore keeps reaching the schedule's owner, who is the user that last
+modified the cron syntax: leave the `schedule:` lines alone when editing these files. The waiting job is
+bound by GitHub's 6-hour job limit; the chains take 2 to 3 hours.
+
+Each wrapper has its own concurrency group (`e2e-canary-<template>`), distinct from the fresh workflow's
+`e2e-<slot>` group that the dispatched run needs; sharing the group would block the dispatched run behind
+the waiting canary until it times out.
+
+Release tags created before the dispatch inputs existed cannot run in canary mode, so `resolve` reports
+`supported=false` and the `canary-from-main` job runs main's fresh workflow as before. Once both templates
+have released with the inputs, delete the `canary-from-main` jobs in both wrappers and the `supported`
+output and probe in `e2e-canary-dispatch.yml`.
 
 ## Release ordering & gotchas
 
@@ -124,6 +145,9 @@ jobs:
 - Target a fast test (e.g. `test_server_running`) to iterate quickly.
 - GitHub org-level oauth requires careful setup, test it with `test_org_and_teams`
 - Once satisfied, verify the full chain via `workflow_dispatch` on your branch.
+- The canary wrappers only run in `jupyter-infra/jupyter-deploy`. A manual dispatch of a wrapper on main runs
+  `resolve` and, until a release carries the dispatch inputs, the fallback; the tag path runs for real once a
+  release does.
 - Remove or gitignore the test workflow before merging.
 
 ## Setup
