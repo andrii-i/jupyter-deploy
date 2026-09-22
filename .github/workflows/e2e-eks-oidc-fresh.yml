@@ -65,6 +65,23 @@ on:
         required: false
         type: boolean
         default: false
+      install-mode:
+        description: "Install mode: workspace (default) or pypi (from package index)"
+        required: false
+        type: choice
+        options: ["workspace", "pypi"]
+        default: "workspace"
+      install-variant:
+        description: "Install variant when install-mode=pypi: release (default) or canary"
+        required: false
+        type: choice
+        options: ["release", "canary"]
+        default: "release"
+      pkg-version:
+        description: "Package version (required when install-mode=pypi, variant=release)"
+        required: false
+        type: string
+        default: ""
       ref:
         description: "Git ref to checkout (e.g. refs/pull/185/merge for a fork PR)"
         required: false
