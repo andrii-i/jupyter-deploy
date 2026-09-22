@@ -1,0 +1,133 @@
+name: E2E canary dispatch
+
+# Runs the e2e of the version users install (#396): reads the released version of `package` on PyPI,
+# dispatches `workflow-file` at the release tag `<package>==<version>` in canary mode and waits for
+# that run, so the calling canary fails with it and its failure email keeps today's recipient.
+
+on:
+  workflow_call:
+    inputs:
+      package:
+        description: "PyPI name of the template under test, e.g. jupyter-deploy-tf-aws-ec2-base"
+        required: true
+        type: string
+      workflow-file:
+        description: "Fresh workflow to run at the release tag, e.g. e2e-base-fresh.yml"
+        required: true
+        type: string
+      oauth-app-num:
+        description: "OAuth app slot passed to the fresh workflow"
+        required: true
+        type: string
+    outputs:
+      # Transitional (#396): false for release tags whose fresh workflow predates the dispatch inputs.
+      supported:
+        description: "'true' when the release tag's workflow accepts the canary dispatch inputs"
+        value: ${{ jobs.resolve.outputs.supported }}
+
+jobs:
+  resolve:
+    name: "Resolve the released version"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      supported: ${{ steps.resolve.outputs.supported }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PACKAGE: ${{ inputs.package }}
+      WORKFLOW: ${{ inputs.workflow-file }}
+    steps:
+      - name: Find the release tag of the version on PyPI
+        id: resolve
+        run: |
+          set -euo pipefail
+          VERSION=$(curl -fsS --retry 3 "https://pypi.org/pypi/$PACKAGE/json" | jq -r .info.version)
+          TAG="$PACKAGE==$VERSION"
+          if ! SHA=$(gh api "repos/$GITHUB_REPOSITORY/commits/$TAG" --jq .sha); then
+            echo "::error::release tag $TAG not found (the mark-release job of release-*.yml creates it)"
+            exit 1
+          fi
+          gh api -X GET "repos/$GITHUB_REPOSITORY/contents/.github/workflows/$WORKFLOW" \
+            -f ref="refs/tags/$TAG" -H "Accept: application/vnd.github.raw+json" > "$RUNNER_TEMP/fresh.yml"
+          # Transitional (#396): tags released before the dispatch inputs existed cannot run in canary mode.
+          if yq -e '.on.workflow_dispatch.inputs.install-variant' "$RUNNER_TEMP/fresh.yml" > /dev/null 2>&1; then
+            SUPPORTED=true
+          else
+            SUPPORTED=false
+          fi
+          echo "Released version $VERSION, tag $TAG at $SHA, canary dispatch supported: $SUPPORTED" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "tag=$TAG"
+            echo "sha=$SHA"
+            echo "supported=$SUPPORTED"
+          } >> "$GITHUB_OUTPUT"
+
+  dispatch:
+    name: "Run the release's e2e"
+    needs: resolve
+    if: needs.resolve.outputs.supported == 'true'
+    runs-on: ubuntu-latest
+    # GitHub's cap for one job; the base and eks chains take 2 to 3 hours.
+    timeout-minutes: 360
+    permissions:
+      actions: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      WORKFLOW: ${{ inputs.workflow-file }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      SHA: ${{ needs.resolve.outputs.sha }}
+      SLOT: ${{ inputs.oauth-app-num }}
+    steps:
+      - name: Dispatch the fresh workflow at the release tag
+        id: dispatch
+        run: |
+          set -euo pipefail
+          SINCE=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%S+00:00)
+          # return_run_details makes the API answer 200 with the new run's id instead of a bodiless 204.
+          RESPONSE=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW/dispatches" \
+            -f ref="$TAG" -F return_run_details=true \
+            -f "inputs[oauth-app-num]=$SLOT" \
+            -f "inputs[install-mode]=pypi" \
+            -f "inputs[install-variant]=canary")
+          RUN_ID=$(jq -r '.workflow_run_id // empty' <<< "$RESPONSE" 2> /dev/null || true)
+          # Without a body, find the run by workflow, event, commit and creation time.
+          for _ in $(seq 1 18); do
+            if [ -n "$RUN_ID" ]; then break; fi
+            sleep 10
+            RUN_ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow "$WORKFLOW" \
+              --event workflow_dispatch --commit "$SHA" --created ">=$SINCE" \
+              --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          done
+          ACTIONS="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions"
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::no run of $WORKFLOW at $TAG found, see $ACTIONS/workflows/$WORKFLOW"
+            exit 1
+          fi
+          echo "Dispatched $ACTIONS/runs/$RUN_ID"
+          echo "Canary run of $TAG: $ACTIONS/runs/$RUN_ID" >> "$GITHUB_STEP_SUMMARY"
+          echo "run-id=$RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the run and fail with it
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run-id }}
+        run: |
+          set -euo pipefail
+          # One poll a minute stays far below the token's 1,000 requests/hour; a failed poll is retried.
+          while true; do
+            STATUS=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json status --jq .status || echo unknown)
+            echo "$(date -u +%FT%TZ) $STATUS"
+            if [ "$STATUS" = completed ]; then break; fi
+            sleep 60
+          done
+          gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY"
+          # gh's --exit-status ignores cancelled runs, so compare the conclusion directly.
+          CONCLUSION=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)
+          if [ "$CONCLUSION" != success ]; then
+            echo "::error::$WORKFLOW at $TAG ended with $CONCLUSION"
+            exit 1
+          fi
