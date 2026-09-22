@@ -10,9 +10,30 @@ permissions:
   id-token: write
   contents: read
 
+# One canary at a time, so a manual run waits for the weekly one instead of queuing a second fresh run.
+# Distinct from the fresh workflow's own group (e2e-3), which the dispatched run needs.
+concurrency:
+  group: e2e-canary-base
+  cancel-in-progress: false
+
 jobs:
+  # Runs the released version's own fresh workflow at its release tag (#396).
   canary:
     if: github.repository == 'jupyter-infra/jupyter-deploy'
+    uses: ./.github/workflows/e2e-canary-dispatch.yml
+    permissions:
+      actions: write
+      contents: read
+    with:
+      package: jupyter-deploy-tf-aws-ec2-base
+      workflow-file: e2e-base-fresh.yml
+      oauth-app-num: "3"
+
+  # Release tags created before #396 cannot be dispatched in canary mode, so main's fresh workflow
+  # runs as before. Delete this job once a release of this template carries the dispatch inputs.
+  canary-from-main:
+    needs: canary
+    if: needs.canary.outputs.supported == 'false'
     uses: ./.github/workflows/e2e-base-fresh.yml
     with:
       oauth-app-num: "3"
