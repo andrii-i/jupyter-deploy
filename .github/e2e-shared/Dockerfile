@@ -19,7 +19,7 @@ FROM ${BASE_IMAGE}
 ARG INSTALL_MODE=workspace
 # Install variant (only applies when INSTALL_MODE=pypi):
 #   "release" (default) — renders pyproject.release.toml with placeholders
-#   "canary" — uses pyproject.canary.toml (all from prod PyPI, no pins)
+#   "canary" — uses pyproject.canary.toml (CLI and template from prod PyPI, no pins; harness from the checkout)
 ARG INSTALL_VARIANT=release
 ARG PKG_VERSION=""
 ARG EXTRA_INDEX_URL=https://test.pypi.org/simple/
@@ -69,6 +69,8 @@ USER testuser
 # published package under test from the configured index), then install Playwright.
 #   release variant: sed-render placeholders from pyproject.release.toml
 #   canary variant: copy pyproject.canary.toml as-is (no placeholders)
+# Both variants install the pytest-jupyter-deploy harness from the checkout (path source in the pyproject),
+# so its own workspace source for jupyter-deploy is stripped: uv rejects it outside a workspace.
 RUN if [ "$INSTALL_MODE" = "pypi" ]; then \
         cd /workspace && \
         rm -rf .venv && \
@@ -78,10 +80,10 @@ RUN if [ "$INSTALL_MODE" = "pypi" ]; then \
         else \
             sed -e "s|{{PKG_VERSION}}|${PKG_VERSION}|g" \
                 -e "s|{{EXTRA_INDEX_URL}}|${EXTRA_INDEX_URL}|g" \
-                ".github/e2e-${TEMPLATE}/pyproject.release.toml" > pyproject.toml && \
-            # Strip workspace source — uv errors on it outside workspace context
-            sed -i '/\[tool\.uv\.sources\.jupyter-deploy\]/,+1d' libs/pytest-jupyter-deploy/pyproject.toml; \
+                ".github/e2e-${TEMPLATE}/pyproject.release.toml" > pyproject.toml; \
         fi && \
+        # Strip workspace source — uv errors on it outside workspace context
+        sed -i '/\[tool\.uv\.sources\.jupyter-deploy\]/,+1d' libs/pytest-jupyter-deploy/pyproject.toml && \
         # Drop the now-unused pyproject templates so the image ships no stale copies.
         rm -rf .github/e2e-base .github/e2e-eks-oidc && \
         uv sync && \
