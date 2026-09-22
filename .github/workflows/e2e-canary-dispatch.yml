@@ -119,14 +119,15 @@ jobs:
           set -euo pipefail
           # One poll a minute stays far below the token's 1,000 requests/hour; a failed poll is retried.
           while true; do
-            STATUS=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json status --jq .status || echo unknown)
+            RUN=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json status,conclusion || echo '{}')
+            STATUS=$(jq -r '.status // "unknown"' <<< "$RUN")
+            CONCLUSION=$(jq -r '.conclusion // empty' <<< "$RUN")
             echo "$(date -u +%FT%TZ) $STATUS"
-            if [ "$STATUS" = completed ]; then break; fi
+            if [ "$STATUS" = completed ] && [ -n "$CONCLUSION" ]; then break; fi
             sleep 60
           done
-          gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY"
+          gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" || true
           # gh's --exit-status ignores cancelled runs, so compare the conclusion directly.
-          CONCLUSION=$(gh run view "$RUN_ID" --repo "$GITHUB_REPOSITORY" --json conclusion --jq .conclusion)
           if [ "$CONCLUSION" != success ]; then
             echo "::error::$WORKFLOW at $TAG ended with $CONCLUSION"
             exit 1
