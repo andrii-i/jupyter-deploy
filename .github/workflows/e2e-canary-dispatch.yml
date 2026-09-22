@@ -92,7 +92,7 @@ jobs:
           set -euo pipefail
           SINCE=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%S+00:00)
           # pkg-version pins the template to the version whose tag supplies the tests.
-          # return_run_details makes the API answer 200 with the new run's id instead of a bodiless 204.
+          # return_run_details (sent by gh's own workflow run) makes github.com answer 200 with the run id, not 204.
           RESPONSE=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW/dispatches" \
             -f ref="$TAG" -F return_run_details=true \
             -f "inputs[oauth-app-num]=$SLOT" \
