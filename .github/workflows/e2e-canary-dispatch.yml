@@ -33,6 +33,7 @@ jobs:
     permissions:
       contents: read
     outputs:
+      version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       sha: ${{ steps.resolve.outputs.sha }}
       supported: ${{ steps.resolve.outputs.supported }}
@@ -62,6 +63,7 @@ jobs:
           echo "Released version $VERSION, tag $TAG at $SHA, canary dispatch supported: $SUPPORTED" \
             | tee -a "$GITHUB_STEP_SUMMARY"
           {
+            echo "version=$VERSION"
             echo "tag=$TAG"
             echo "sha=$SHA"
             echo "supported=$SUPPORTED"
@@ -79,6 +81,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       WORKFLOW: ${{ inputs.workflow-file }}
+      VERSION: ${{ needs.resolve.outputs.version }}
       TAG: ${{ needs.resolve.outputs.tag }}
       SHA: ${{ needs.resolve.outputs.sha }}
       SLOT: ${{ inputs.oauth-app-num }}
@@ -88,12 +91,14 @@ jobs:
         run: |
           set -euo pipefail
           SINCE=$(date -u -d '-1 minute' +%Y-%m-%dT%H:%M:%S+00:00)
+          # pkg-version pins the template to the version whose tag supplies the tests.
           # return_run_details makes the API answer 200 with the new run's id instead of a bodiless 204.
           RESPONSE=$(gh api -X POST "repos/$GITHUB_REPOSITORY/actions/workflows/$WORKFLOW/dispatches" \
             -f ref="$TAG" -F return_run_details=true \
             -f "inputs[oauth-app-num]=$SLOT" \
             -f "inputs[install-mode]=pypi" \
-            -f "inputs[install-variant]=canary")
+            -f "inputs[install-variant]=canary" \
+            -f "inputs[pkg-version]=$VERSION")
           RUN_ID=$(jq -r '.workflow_run_id // empty' <<< "$RESPONSE" 2> /dev/null || true)
           # Without a body, find the run by workflow, event, commit and creation time.
           for _ in $(seq 1 18); do

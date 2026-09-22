@@ -43,9 +43,10 @@ mode determines what actually gets deployed:
 - **workspace** (default, PR/manual) — local source via `uv sync --all-packages`.
 - **pypi + release** (release gate) — the package under test pinned from Test PyPI
   (`pkg-version`), the rest from prod PyPI. Renders `.github/e2e-<template>/pyproject.release.toml`.
-- **pypi + canary** (scheduled canary) — CLI and template from prod PyPI, unpinned; the
-  `pytest-jupyter-deploy` harness from the checkout, since the tests import their fixtures from it.
-  Uses `.github/e2e-<template>/pyproject.canary.toml`.
+- **pypi + canary** (scheduled canary) — CLI from prod PyPI, unpinned; the template from prod PyPI, pinned
+  to `pkg-version` when given (the canary passes the version it found on PyPI, the fallback passes none);
+  the `pytest-jupyter-deploy` harness from the checkout, since the tests import their fixtures from it.
+  Renders `.github/e2e-<template>/pyproject.canary.toml`.
 
 The E2E image is **template-shared** (one `.github/e2e-shared/Dockerfile`, used by both
 base and eks-oidc). The `TEMPLATE` build-arg on `e2e-build-image.yml` / the Dockerfile
@@ -60,14 +61,14 @@ deploys the published package). The ~30-min deploy is readable in its own job; t
 
 ## Canary at the release tag
 
-The canary tests the version users install. `e2e-<template>-canary.yml` calls `e2e-canary-dispatch.yml`,
-which reads the template's released version on PyPI, resolves the release tag `<pkg>==<version>`, dispatches
-the template's fresh workflow at that tag with `install-mode=pypi install-variant=canary`, so tests, e2e
-config, justfile, harness and workflow file all come from the release, then polls the run until it completes
-and fails with it. The failure email therefore keeps reaching the schedule's owner, who is the user that last
-modified the cron syntax: leave the `schedule:` lines alone when editing these files. The waiting job is
-bound by GitHub's 6-hour job limit; the chains take 2 to 3 hours. The dispatched run's jobs use the `e2e`
-environment from a tag ref, so that environment must not restrict deployments to branches (today it has no
+The canary tests the version users install. `e2e-<template>-canary.yml` calls `e2e-canary-dispatch.yml`, which reads
+the template's released version on PyPI, resolves the release tag `<pkg>==<version>`, dispatches the template's fresh
+workflow at that tag with `install-mode=pypi install-variant=canary pkg-version=<version>`, so tests, e2e config,
+justfile, harness and workflow file all come from the release and the image installs that same template version, then
+polls the run until it completes and fails with it. The failure email therefore keeps reaching the schedule's owner,
+who is the user that last modified the cron syntax: leave the `schedule:` lines alone when editing these files. The
+waiting job is bound by GitHub's 6-hour job limit; the chains take 2 to 3 hours. The dispatched run's jobs use the
+`e2e` environment from a tag ref, so that environment must not restrict deployments to branches (today it has no
 deployment branch policy).
 
 Each wrapper has its own concurrency group (`e2e-canary-<template>`), distinct from the fresh workflow's

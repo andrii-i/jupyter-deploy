@@ -23,7 +23,7 @@ on:
         type: string
         default: "release"
       pkg-version:
-        description: "Package version (required when install-mode=pypi, variant=release)"
+        description: "Package version to pin (release: from the extra index; canary: from prod PyPI, empty = latest)"
         required: false
         type: string
         default: ""

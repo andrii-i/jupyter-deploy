@@ -1,6 +1,7 @@
 # Template for canary E2E testing.
-# CLI and template installed from prod PyPI, no version pins, no placeholders.
-# The solver picks the latest compatible versions, same as a user running `pip install`.
+# Placeholder replaced at build time by the Dockerfile:
+#   {{PKG_PIN}}: "==<PKG_VERSION>" when the build passes the version the canary found on PyPI, else empty
+# Everything else resolves to the latest from prod PyPI, same as a user running `pip install`.
 # The pytest-jupyter-deploy harness comes from the checkout: the tests import their fixtures from it.
 [project]
 name = "e2e-canary"
@@ -8,7 +9,7 @@ version = "0.0.0"
 requires-python = ">=3.12"
 dependencies = [
     "jupyter-deploy[aws]",
-    "jupyter-deploy-tf-aws-ec2-base",
+    "jupyter-deploy-tf-aws-ec2-base{{PKG_PIN}}",
     "pytest-jupyter-deploy[ui]",
     "pytest-cov",
 ]
