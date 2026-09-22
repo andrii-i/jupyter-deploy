@@ -66,7 +66,9 @@ the template's fresh workflow at that tag with `install-mode=pypi install-varian
 config, justfile, harness and workflow file all come from the release, then polls the run until it completes
 and fails with it. The failure email therefore keeps reaching the schedule's owner, who is the user that last
 modified the cron syntax: leave the `schedule:` lines alone when editing these files. The waiting job is
-bound by GitHub's 6-hour job limit; the chains take 2 to 3 hours.
+bound by GitHub's 6-hour job limit; the chains take 2 to 3 hours. The dispatched run's jobs use the `e2e`
+environment from a tag ref, so that environment must not restrict deployments to branches (today it has no
+deployment branch policy).
 
 Each wrapper has its own concurrency group (`e2e-canary-<template>`), distinct from the fresh workflow's
 `e2e-<slot>` group that the dispatched run needs; sharing the group would block the dispatched run behind
