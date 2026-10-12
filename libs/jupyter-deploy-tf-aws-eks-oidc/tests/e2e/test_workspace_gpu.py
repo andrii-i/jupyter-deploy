@@ -46,6 +46,7 @@ from .constants import (
 from .test_utils import (
     PRIMARY_CONTAINER,
     get_workspace_pod,
+    list_workspace_pods,
     record_workspace_start,
     utc_now,
     write_start_phase_record,
@@ -92,6 +93,10 @@ def gpu_pool_flag_guard(e2e_deployment: EndToEndDeployment) -> Generator[None, N
     e2e_deployment.ensure_deployed()
     original = bool(e2e_deployment.read_override_value(GPU_POOL_FLAG))
     yield
+    # The kubectl case leaves GPU_WORKSPACE running for the restart case; a filtered run can end
+    # the module with it alive, and a live GPU pod keeps a GPU node up.
+    with contextlib.suppress(Exception):
+        kubectl_delete_workspace(GPU_WORKSPACE)
     if bool(e2e_deployment.read_override_value(GPU_POOL_FLAG)) != original:
         # A live GPU pod pins the pool; drop leftovers before the restoring apply.
         # The UI case's workspace name is generated at create time, so select by the
@@ -226,6 +231,10 @@ def test_stopped_gpu_workspace_restarts_on_fresh_node_with_its_home_volume(
     kubectl case are both there without any reinstall.
     """
     e2e_deployment.ensure_deployed()
+    if not list_workspace_pods(GPU_WORKSPACE, WORKSPACE_NAMESPACE):
+        pytest.fail(
+            f"{GPU_WORKSPACE} is not running; this case continues from test_kubectl_gpu_workspace_runs_cuda_notebook"
+        )
     try:
         first_pod = get_workspace_pod(GPU_WORKSPACE, WORKSPACE_NAMESPACE)
         first_node = first_pod["spec"]["nodeName"]

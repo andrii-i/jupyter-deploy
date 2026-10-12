@@ -24,14 +24,17 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def get_workspace_pod(name: str, namespace: str) -> dict[str, Any]:
-    """Return the JSON of the one live pod backing a workspace."""
+def list_workspace_pods(name: str, namespace: str) -> list[dict[str, Any]]:
+    """Return the JSON of the live pods backing a workspace, terminating pods excluded."""
     result = run_kubectl(
         "get", "pods", "-n", namespace, "-l", f"workspace.jupyter.org/workspace-name={name}", "-o", "json", check=True
     )
-    pods: list[dict[str, Any]] = [
-        pod for pod in json.loads(result.stdout)["items"] if "deletionTimestamp" not in pod["metadata"]
-    ]
+    return [pod for pod in json.loads(result.stdout)["items"] if "deletionTimestamp" not in pod["metadata"]]
+
+
+def get_workspace_pod(name: str, namespace: str) -> dict[str, Any]:
+    """Return the JSON of the one live pod backing a workspace."""
+    pods = list_workspace_pods(name, namespace)
     assert len(pods) == 1, f"Expected one live pod for workspace {name}, found {len(pods)}"
     return pods[0]
 
