@@ -21,6 +21,7 @@ on:
         description: "Suffix for this job's test-results artifact (must be unique within a run)"
         required: false
         type: string
+        default: ""
       marker:
         description: "Pytest marker to select (e.g. mutating); defaults to all e2e tests"
         required: false

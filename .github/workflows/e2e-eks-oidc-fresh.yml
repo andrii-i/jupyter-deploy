@@ -311,8 +311,9 @@ jobs:
 
   # GPU tests in their own job so a flake elsewhere never forces re-running the
   # GPU hour and vice versa. The module enables the GPU pool itself (two
-  # jd config + jd up cycles) and runs the torch/CUDA notebook on both the
-  # kubectl- and UI-created workspaces, about an hour typical.
+  # jd config + jd up cycles), runs the torch/CUDA notebook on the kubectl- and
+  # UI-created workspaces, and stops and restarts the first one on a fresh node;
+  # about 75 minutes typical.
   test-gpu:
     name: "Mutating tests: GPU"
     needs: [build-image, test-mutating]
