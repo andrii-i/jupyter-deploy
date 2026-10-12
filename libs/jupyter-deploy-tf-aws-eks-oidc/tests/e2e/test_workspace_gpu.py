@@ -44,7 +44,6 @@ from .constants import (
     ORDER_GPU,
 )
 from .test_utils import (
-    PRIMARY_CONTAINER,
     get_workspace_pod,
     list_workspace_pods,
     record_workspace_start,
@@ -70,6 +69,10 @@ pytestmark = [
 
 def _kubectl_stdout(*args: str) -> str:
     return run_kubectl(*args, check=True).stdout.strip()
+
+
+def _node_instance(node_name: str) -> str:
+    return _kubectl_stdout("get", "node", node_name, "-o", "jsonpath={.spec.providerID}")
 
 
 def _gpu_node_count() -> int:
@@ -237,19 +240,19 @@ def test_stopped_gpu_workspace_restarts_on_fresh_node_with_its_home_volume(
         )
     try:
         first_pod = get_workspace_pod(GPU_WORKSPACE, WORKSPACE_NAMESPACE)
-        first_node = first_pod["spec"]["nodeName"]
-        run_kubectl(
-            "exec",
-            "-n",
-            WORKSPACE_NAMESPACE,
-            first_pod["metadata"]["name"],
-            "-c",
-            PRIMARY_CONTAINER,
-            "--",
-            "sh",
-            "-c",
-            f"echo restart-ok > {RESTART_MARKER}",
-            check=True,
+        # The instance id, not the node name: a replacement node in the same subnet can get the
+        # released IP back, and EKS names nodes after it.
+        first_instance = _node_instance(first_pod["spec"]["nodeName"])
+        e2e_deployment.cli.run_exec_with_retry(
+            [
+                "jupyter-deploy",
+                "server",
+                "exec",
+                "--name",
+                GPU_WORKSPACE,
+                "--",
+                f"sh -c 'echo restart-ok > {RESTART_MARKER}'",
+            ]
         )
 
         e2e_deployment.cli.run_command(["jupyter-deploy", "server", "stop", "--name", GPU_WORKSPACE])
@@ -267,11 +270,12 @@ def test_stopped_gpu_workspace_restarts_on_fresh_node_with_its_home_volume(
         e2e_deployment.cli.poll_scoped_server_status(GPU_WORKSPACE, "Running", timeout_s=600)
 
         pod = get_workspace_pod(GPU_WORKSPACE, WORKSPACE_NAMESPACE)
-        record_workspace_start(
+        record = record_workspace_start(
             request.node.originalname, e2e_deployment, GPU_WORKSPACE, WORKSPACE_NAMESPACE, requested, pod
         )
-        assert pod["spec"]["nodeName"] != first_node, (
-            f"Restarted pod is on {first_node} again; expected a fresh node after the pool scaled to zero"
+        new_instance = _node_instance(pod["spec"]["nodeName"])
+        assert new_instance != first_instance, (
+            f"Restarted pod is on instance {first_instance} again; expected a fresh node after the pool scaled to zero"
         )
 
         e2e_deployment.cli.wait_for_workspace_pod_exec_ready(GPU_WORKSPACE)
@@ -291,7 +295,10 @@ def test_stopped_gpu_workspace_restarts_on_fresh_node_with_its_home_volume(
             scope=WORKSPACE_NAMESPACE,
         )
         # No install cell: torch has to come from the venv on the volume.
+        notebook_started = time.monotonic()
         run_notebook_in_jupyterlab(dex_oauth_app.page, server_path, timeout_ms=180000)
+        record["durations_s"]["notebook_gpu_cuda_available"] = round(time.monotonic() - notebook_started, 1)
+        write_start_phase_record(record)
         delete_notebook(e2e_deployment, server_path, name=GPU_WORKSPACE, scope=WORKSPACE_NAMESPACE)
     finally:
         # Free the single GPU promptly so the UI case can reuse a warm node;
