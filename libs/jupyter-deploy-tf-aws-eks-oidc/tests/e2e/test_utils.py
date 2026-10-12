@@ -126,7 +126,7 @@ def _pod_condition_time(pod: dict[str, Any], condition_type: str) -> datetime | 
 
 def _condition_time(conditions: list[dict[str, Any]], condition_type: str) -> datetime | None:
     for condition in conditions:
-        if condition["type"] == condition_type:
+        if condition["type"] == condition_type and condition["status"] == "True":
             return _parse_k8s_time(condition.get("lastTransitionTime"))
     return None
 
