@@ -72,7 +72,9 @@ def _kubectl_stdout(*args: str) -> str:
 
 
 def _node_instance(node_name: str) -> str:
-    return _kubectl_stdout("get", "node", node_name, "-o", "jsonpath={.spec.providerID}")
+    instance = _kubectl_stdout("get", "node", node_name, "-o", "jsonpath={.spec.providerID}")
+    assert instance, f"node {node_name} has no providerID"
+    return instance
 
 
 def _gpu_node_count() -> int:
