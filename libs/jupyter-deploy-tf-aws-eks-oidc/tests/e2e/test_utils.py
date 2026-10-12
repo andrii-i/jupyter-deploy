@@ -8,6 +8,7 @@ from typing import Any
 
 from pytest_jupyter_deploy.deployment import EndToEndDeployment
 from pytest_jupyter_deploy.kubernetes.kubectl import run_kubectl
+from pytest_jupyter_deploy.workspaces.kubectl import kubectl_list_workspace_pods
 
 # Relative to the pytest working directory, like the sibling suites' failure artifacts:
 # the justfile mounts ./test-results into the container and the e2e job uploads it.
@@ -24,17 +25,9 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def list_workspace_pods(name: str, namespace: str) -> list[dict[str, Any]]:
-    """Return the JSON of the live pods backing a workspace, terminating pods excluded."""
-    result = run_kubectl(
-        "get", "pods", "-n", namespace, "-l", f"workspace.jupyter.org/workspace-name={name}", "-o", "json", check=True
-    )
-    return [pod for pod in json.loads(result.stdout)["items"] if "deletionTimestamp" not in pod["metadata"]]
-
-
 def get_workspace_pod(name: str, namespace: str) -> dict[str, Any]:
     """Return the JSON of the one live pod backing a workspace."""
-    pods = list_workspace_pods(name, namespace)
+    pods = kubectl_list_workspace_pods(name, namespace)
     assert len(pods) == 1, f"Expected one live pod for workspace {name}, found {len(pods)}"
     return pods[0]
 

@@ -28,6 +28,7 @@ from pytest_jupyter_deploy.workspaces.kubectl import (
     kubectl_apply_workspace,
     kubectl_delete_workspace,
     kubectl_get_workspace_access_url,
+    kubectl_list_workspace_pods,
 )
 from pytest_jupyter_deploy.workspaces.web_app import WebAppNavigator
 
@@ -45,7 +46,6 @@ from .constants import (
 )
 from .test_utils import (
     get_workspace_pod,
-    list_workspace_pods,
     record_workspace_start,
     utc_now,
     write_start_phase_record,
@@ -236,7 +236,7 @@ def test_stopped_gpu_workspace_restarts_on_fresh_node_with_its_home_volume(
     kubectl case are both there without any reinstall.
     """
     e2e_deployment.ensure_deployed()
-    if not list_workspace_pods(GPU_WORKSPACE, WORKSPACE_NAMESPACE):
+    if not kubectl_list_workspace_pods(GPU_WORKSPACE, WORKSPACE_NAMESPACE):
         pytest.fail(
             f"{GPU_WORKSPACE} is not running; this case continues from test_kubectl_gpu_workspace_runs_cuda_notebook"
         )
