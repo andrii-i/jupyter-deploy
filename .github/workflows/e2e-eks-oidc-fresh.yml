@@ -324,6 +324,7 @@ jobs:
       ref: ${{ inputs.ref }}
       ecr-tag: ${{ needs.build-image.outputs.ecr-tag }}
       marker: gpu
+      artifact-name: gpu
       mutate: true
       timeout-minutes: 120
 
