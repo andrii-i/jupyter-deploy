@@ -1329,7 +1329,7 @@ dev = [
 
 [[package]]
 name = "jupyter-deploy-tf-aws-eks-oidc"
-version = "0.5.0"
+version = "0.4.1"
 source = { editable = "libs/jupyter-deploy-tf-aws-eks-oidc" }
 dependencies = [
     { name = "boto3" },
